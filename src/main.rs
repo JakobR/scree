@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use cli::{Command, Options, PingOptions, RunOptions};
 use tracing::{debug, info};
 use tracing_subscriber::EnvFilter;
@@ -18,11 +18,9 @@ async fn main() -> Result<()>
 
     match &options.command {
         Command::Ping(ping_options) =>
-            ping(&options, &ping_options).await
-            .context("ping"),
+            ping(&options, &ping_options).await,
         Command::Run(run_options) =>
-            run(&options, &run_options).await
-            .context("run"),
+            run(&options, &run_options).await,
     }
 }
 
@@ -37,7 +35,7 @@ async fn run(options: &Options, run_options: &RunOptions) -> Result<()>
 {
     debug!(?run_options);
 
-    let _db = db::connect(&options.db).await?;
+    let _db = db::Database::connect(&options.db).await?;
 
     let mut cfg = scree::Config::new();
     cfg.ping("f43a7112-2a54-4562-8fde-29e27cdf6c02", "server1/backup", Duration::from_secs(3600), Duration::from_secs(600));
