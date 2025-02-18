@@ -8,7 +8,6 @@ pub use cfg::Config;
 use tracing::debug;
 
 mod cfg;
-mod db;
 
 pub async fn run(cfg: Config) -> Result<()>
 {
@@ -32,7 +31,7 @@ async fn dashboard() -> &'static str
     "Hello World!"
 }
 
-async fn ping(state: State<()>, Path(token): Path<String>) -> Result<String, StatusCode>
+async fn ping(_state: State<()>, Path(token): Path<String>) -> Result<String, StatusCode>
 {
     debug!(?token);
 

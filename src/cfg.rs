@@ -30,11 +30,11 @@ impl Config {
 
 pub struct PingConfig {
     /// Token used in ping URL, unique identifier.
-    token: String,
+    pub token: String,
     /// Name of the ping to display on dashboard and in reports.
-    name: String,
+    pub name: String,
     /// Expected amount of time between pings.
-    period: Duration,
+    pub period: Duration,
     /// Amount of time after a missed deadline before this item is considered to be in error state.
-    grace: Duration,
+    pub grace: Duration,
 }
