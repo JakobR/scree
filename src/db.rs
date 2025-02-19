@@ -206,20 +206,12 @@ impl Connection {
             , deterministic = false
             );
 
-            CREATE TYPE change_kind AS ENUM ('insert', 'update', 'delete');
-
             CREATE TABLE ping_monitors
             ( id SERIAL PRIMARY KEY
             , token TEXT UNIQUE NOT NULL COLLATE case_insensitive
             , name TEXT NOT NULL
             , period_ns INTEGER NOT NULL
             , grace_ns INTEGER NOT NULL
-            );
-
-            CREATE TABLE ping_monitor_history
-            ( id SERIAL PRIMARY KEY
-            , monitor_id INTEGER NOT NULL
-            , change change_kind NOT NULL
             );
 
             CREATE TABLE ping_events
@@ -230,26 +222,16 @@ impl Connection {
 
             CREATE FUNCTION notify_ping_monitors_change() RETURNS TRIGGER AS $$
                 BEGIN
-                    -- Check the operation type
-                    IF TG_OP = 'INSERT' THEN
-                        INSERT INTO ping_monitor_history (monitor_id, change) VALUES ( NEW.id, 'insert' );
-                    ELSIF TG_OP = 'UPDATE' THEN
-                        INSERT INTO ping_monitor_history (monitor_id, change) VALUES ( NEW.id, 'update' );
-                    ELSIF TG_OP = 'DELETE' THEN
-                        INSERT INTO ping_monitor_history (monitor_id, change) VALUES ( OLD.id, 'delete' );
-                    END IF;
-
                     NOTIFY ping_monitors_changed;
-
                     RETURN NULL;
                 END;
             $$ LANGUAGE plpgsql;
 
             CREATE TRIGGER trigger_ping_monitors_change
-                AFTER INSERT OR UPDATE OR DELETE
+                AFTER INSERT OR UPDATE OR DELETE OR TRUNCATE
                 ON ping_monitors
-                FOR EACH ROW
-                EXECUTE PROCEDURE notify_ping_monitors_change();
+                FOR EACH STATEMENT
+                EXECUTE FUNCTION notify_ping_monitors_change();
 
         "#).await?;
 
@@ -280,12 +262,47 @@ impl Connection {
 
 }
 
-use postgres_types::{ToSql, FromSql};
 
-#[derive(Debug, ToSql, FromSql)]
-#[postgres(name = "change_kind", rename_all = "snake_case")]
-pub enum ChangeKind {
-    Insert,
-    Update,
-    Delete,
-}
+
+/*
+
+To get detailed change notifications, we can record a change log in a separate history table:
+
+            CREATE TYPE change_kind AS ENUM ('insert', 'update', 'delete');
+
+            CREATE FUNCTION notify_ping_monitors_change() RETURNS TRIGGER AS $$
+                BEGIN
+                    -- Check the operation type
+                    IF TG_OP = 'INSERT' THEN
+                        INSERT INTO ping_monitor_history (monitor_id, change) VALUES ( NEW.id, 'insert' );
+                    ELSIF TG_OP = 'UPDATE' THEN
+                        INSERT INTO ping_monitor_history (monitor_id, change) VALUES ( NEW.id, 'update' );
+                    ELSIF TG_OP = 'DELETE' THEN
+                        INSERT INTO ping_monitor_history (monitor_id, change) VALUES ( OLD.id, 'delete' );
+                    END IF;
+
+                    NOTIFY ping_monitors_changed;
+
+                    RETURN NULL;
+                END;
+            $$ LANGUAGE plpgsql;
+
+            CREATE TRIGGER trigger_ping_monitors_change
+                AFTER INSERT OR UPDATE OR DELETE
+                ON ping_monitors
+                FOR EACH ROW
+                EXECUTE FUNCTION notify_ping_monitors_change();
+
+To map the enum type, we can use the following:
+
+    use postgres_types::{ToSql, FromSql};
+
+    #[derive(Debug, ToSql, FromSql)]
+    #[postgres(name = "change_kind", rename_all = "snake_case")]
+    pub enum ChangeKind {
+        Insert,
+        Update,
+        Delete,
+    }
+
+ */
