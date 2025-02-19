@@ -9,6 +9,7 @@ axum = "0.8.1"
 chrono = { version = "0.4.39", features = ["now"] }
 clap = { version = "4.5.30", features = ["derive"] }
 futures = "0.3.31"
+postgres-types = { version = "0.2.9", features = ["derive"] }
 tokio = { version = "1.43.0", features = ["full"] }
 tokio-postgres = "0.7.13"
 tokio-util = "0.7.13"

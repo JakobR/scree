@@ -206,6 +206,8 @@ impl Connection {
             , deterministic = false
             );
 
+            CREATE TYPE change_kind AS ENUM ('insert', 'update', 'delete');
+
             CREATE TABLE ping_monitors
             ( id SERIAL PRIMARY KEY
             , token TEXT UNIQUE NOT NULL COLLATE case_insensitive
@@ -214,11 +216,40 @@ impl Connection {
             , grace_ns INTEGER NOT NULL
             );
 
+            CREATE TABLE ping_monitor_history
+            ( id SERIAL PRIMARY KEY
+            , monitor_id INTEGER NOT NULL
+            , change change_kind NOT NULL
+            );
+
             CREATE TABLE ping_events
             ( id SERIAL PRIMARY KEY
             , monitor_id INTEGER NOT NULL REFERENCES ping_monitors(id)
             , occurred_at TIMESTAMP WITH TIME ZONE
             );
+
+            CREATE FUNCTION notify_ping_monitors_change() RETURNS TRIGGER AS $$
+                BEGIN
+                    -- Check the operation type
+                    IF TG_OP = 'INSERT' THEN
+                        INSERT INTO ping_monitor_history (monitor_id, change) VALUES ( NEW.id, 'insert' );
+                    ELSIF TG_OP = 'UPDATE' THEN
+                        INSERT INTO ping_monitor_history (monitor_id, change) VALUES ( NEW.id, 'update' );
+                    ELSIF TG_OP = 'DELETE' THEN
+                        INSERT INTO ping_monitor_history (monitor_id, change) VALUES ( OLD.id, 'delete' );
+                    END IF;
+
+                    NOTIFY ping_monitors_changed;
+
+                    RETURN NULL;
+                END;
+            $$ LANGUAGE plpgsql;
+
+            CREATE TRIGGER trigger_ping_monitors_change
+                AFTER INSERT OR UPDATE OR DELETE
+                ON ping_monitors
+                FOR EACH ROW
+                EXECUTE PROCEDURE notify_ping_monitors_change();
 
         "#).await?;
 
@@ -247,4 +278,14 @@ impl Connection {
         Ok(())
     }
 
+}
+
+use postgres_types::{ToSql, FromSql};
+
+#[derive(Debug, ToSql, FromSql)]
+#[postgres(name = "change_kind", rename_all = "snake_case")]
+pub enum ChangeKind {
+    Insert,
+    Update,
+    Delete,
 }

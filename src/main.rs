@@ -40,6 +40,7 @@ async fn run(options: &Options, run_options: &RunOptions) -> Result<()>
     let _nf_rx = conn.take_notification_rx().expect("notification receiver is available");
 
     conn.client.batch_execute(r"
+        LISTEN ping_monitors_changed;
         LISTEN my_channel;
         NOTIFY my_channel, 'hello!';
         NOTIFY my_channel, 'good bye!';
