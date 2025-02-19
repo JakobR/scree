@@ -1,10 +1,13 @@
 use anyhow::{bail, Context, Result};
+use tokio::sync::OnceCell;
 use tokio::task::JoinHandle;
-use tokio_postgres::{Client, NoTls};
+use tokio_postgres::{Client, NoTls, Statement};
 use tracing::{debug, error};
 
 pub struct Database {
     pub client: Client,
+
+    get_property_stmt: OnceCell<Statement>,
 
     #[allow(dead_code)]  // TODO: remove
     connection_handle: JoinHandle<()>,
@@ -30,6 +33,7 @@ impl Database {
 
         let mut db = Self {
             client,
+            get_property_stmt: OnceCell::new(),
             connection_handle,
         };
 
@@ -40,11 +44,10 @@ impl Database {
 
     pub async fn get_property(&self, name: &str) -> Result<Option<String>>
     {
-        let row_opt =
-            self.client.query_opt(r#"
-                SELECT value FROM scree_properties WHERE name = $1
-            "#, &[&name]).await?;
-
+        let stmt = self.get_property_stmt.get_or_try_init(|| {
+            self.client.prepare(r"SELECT value FROM scree_properties WHERE name = $1")
+        }).await?;
+        let row_opt = self.client.query_opt(stmt, &[&name]).await?;
         let value_opt = row_opt.map(|row| row.try_get(0)).transpose()?;
         Ok(value_opt)
     }
@@ -55,7 +58,7 @@ impl Database {
         self.client.execute(r#"
             INSERT OR REPLACE INTO scree_properties (name, value)
             VALUES ($1, $2)
-        "#, &[&name, &value]).await.context("set_property")?;
+        "#, &[&name, &value]).await?;
         Ok(())
     }
 
@@ -64,7 +67,7 @@ impl Database {
     {
         self.client.execute(r#"
             DELETE FROM scree_properties WHERE name = $1
-        "#, &[&name]).await.context("delete_property")?;
+        "#, &[&name]).await?;
         Ok(())
     }
 
@@ -78,12 +81,12 @@ impl Database {
     async fn init_schema(&mut self) -> Result<()>
     {
         // Create property table early, to ensure we can query the schema version
-        self.client.execute(r#"
+        self.client.batch_execute(r#"
             CREATE TABLE IF NOT EXISTS scree_properties
             ( name TEXT PRIMARY KEY
             , value TEXT NOT NULL
-            )
-        "#, &[]).await?;
+            );
+        "#).await?;
 
         if self.get_schema_version().await?.is_none() {
             self.create_schema().await?;
@@ -101,38 +104,36 @@ impl Database {
         debug!("Creating database schema...");
         let t = self.client.transaction().await?;
 
-        let create_property = t.prepare("INSERT INTO scree_properties (name, value) VALUES ($1, $2)").await?;
+        let create_property = t.prepare(r"INSERT INTO scree_properties (name, value) VALUES ($1, $2)").await?;
         t.execute(&create_property, &[&"schema_version", &Self::SCHEMA_VERSION.to_string()]).await?;
         t.execute(&create_property, &[&"created_at", &chrono::offset::Utc::now().to_rfc3339()]).await?;
 
-        t.execute(r#"
+        t.batch_execute(r#"
+
             CREATE COLLATION case_insensitive
             ( provider = icu
             , locale = 'und-u-ks-level2'
             , deterministic = false
-            )
-        "#, &[]).await?;
+            );
 
-        // TODO: check whether COLLATE case_insensitive does what I want
-        t.execute(r#"
             CREATE TABLE ping_monitors
             ( id SERIAL PRIMARY KEY
             , token TEXT UNIQUE NOT NULL COLLATE case_insensitive
             , name TEXT NOT NULL
             , period_ns INTEGER NOT NULL
             , grace_ns INTEGER NOT NULL
-            )
-        "#, &[]).await?;
+            );
 
-        // TODO: add index for sorting on time stamps?
-        // TODO: could log source ip address as well
-        t.execute(r#"
             CREATE TABLE ping_events
             ( id SERIAL PRIMARY KEY
             , monitor_id INTEGER NOT NULL REFERENCES ping_monitors(id)
             , occurred_at TIMESTAMP WITH TIME ZONE
-            )
-        "#, &[]).await?;
+            );
+
+        "#).await?;
+
+        // TODO: ping_events: add index on for sorting on time stamps?
+        // TODO: ping_events: could log the source ip address as well
 
         t.commit().await?;
         Ok(())
