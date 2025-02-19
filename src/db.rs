@@ -2,7 +2,7 @@ use anyhow::{bail, Context, Result};
 use futures::{stream, StreamExt};
 use tokio::sync::{mpsc, Mutex, OnceCell};
 use tokio::task::JoinHandle;
-use tokio_postgres::{AsyncMessage, Client, NoTls, Notification, Statement};
+use tokio_postgres::{AsyncMessage, Client, Notification, Statement};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
@@ -100,9 +100,13 @@ impl Connection {
 
     async fn new(config: &str) -> Result<Self>
     {
-        // TODO: set up TLS support, see https://docs.rs/tokio-postgres/latest/tokio_postgres/#ssltls-support
+        let connector = native_tls::TlsConnector::builder()
+            .min_protocol_version(Some(native_tls::Protocol::Tlsv12))
+            .build()?;
+        let connector = postgres_native_tls::MakeTlsConnector::new(connector);
+
         let (client, connection) =
-            tokio_postgres::connect(config, NoTls).await
+            tokio_postgres::connect(config, connector).await
             .context("unable to connect to database")?;
 
         let connection_token = CancellationToken::new();
