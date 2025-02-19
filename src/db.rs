@@ -50,6 +50,8 @@ pub struct Connection {
     pub client: Client,
 
     get_property_stmt: OnceCell<Statement>,
+    set_property_stmt: OnceCell<Statement>,
+    delete_property_stmt: OnceCell<Statement>,
 
     connection_handle: JoinHandle<()>,
     connection_token: CancellationToken,
@@ -113,6 +115,8 @@ impl Connection {
         Ok(Self {
             client,
             get_property_stmt: OnceCell::new(),
+            set_property_stmt: OnceCell::new(),
+            delete_property_stmt: OnceCell::new(),
             connection_handle,
             connection_token,
             notification_rx: Some(notification_rx),
@@ -135,7 +139,9 @@ impl Connection {
     pub async fn get_property(&self, name: &str) -> Result<Option<String>>
     {
         let stmt = self.get_property_stmt.get_or_try_init(|| {
-            self.client.prepare(r"SELECT value FROM scree_properties WHERE name = $1")
+            self.client.prepare(/*sql*/ r"
+                SELECT value FROM scree_properties WHERE name = $1
+            ")
         }).await?;
         let row_opt = self.client.query_opt(stmt, &[&name]).await?;
         let value_opt = row_opt.map(|row| row.try_get(0)).transpose()?;
@@ -145,19 +151,24 @@ impl Connection {
     #[allow(unused)]  // TODO: remove
     pub async fn set_property(&self, name: &str, value: &str) -> Result<()>
     {
-        self.client.execute(r#"
-            INSERT OR REPLACE INTO scree_properties (name, value)
-            VALUES ($1, $2)
-        "#, &[&name, &value]).await?;
+        let stmt = self.set_property_stmt.get_or_try_init(|| {
+            self.client.prepare(/*sql*/ r"
+                INSERT OR REPLACE INTO scree_properties (name, value) VALUES ($1, $2)
+            ")
+        }).await?;
+        self.client.execute(stmt, &[&name, &value]).await?;
         Ok(())
     }
 
     #[allow(unused)]  // TODO: remove
     pub async fn delete_property(&self, name: &str) -> Result<()>
     {
-        self.client.execute(r#"
-            DELETE FROM scree_properties WHERE name = $1
-        "#, &[&name]).await?;
+        let stmt = self.delete_property_stmt.get_or_try_init(|| {
+            self.client.prepare(/*sql*/ r"
+                DELETE FROM scree_properties WHERE name = $1
+            ")
+        }).await?;
+        self.client.execute(stmt, &[&name]).await?;
         Ok(())
     }
 
@@ -171,7 +182,7 @@ impl Connection {
     async fn init_schema(&mut self) -> Result<()>
     {
         // Create property table early, to ensure we can query the schema version
-        self.client.batch_execute(r#"
+        self.client.batch_execute(/*sql*/ r#"
             CREATE TABLE IF NOT EXISTS scree_properties
             ( name TEXT PRIMARY KEY
             , value TEXT NOT NULL
@@ -194,11 +205,13 @@ impl Connection {
         debug!("Creating database schema...");
         let t = self.client.transaction().await?;
 
-        let create_property = t.prepare(r"INSERT INTO scree_properties (name, value) VALUES ($1, $2)").await?;
+        let create_property = t.prepare(/*sql*/ r"
+            INSERT INTO scree_properties (name, value) VALUES ($1, $2)
+        ").await?;
         t.execute(&create_property, &[&"schema_version", &Self::SCHEMA_VERSION.to_string()]).await?;
         t.execute(&create_property, &[&"created_at", &chrono::offset::Utc::now().to_rfc3339()]).await?;
 
-        t.batch_execute(r#"
+        t.batch_execute(/*sql*/ r#"
 
             CREATE COLLATION case_insensitive
             ( provider = icu
