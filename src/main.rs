@@ -35,7 +35,9 @@ async fn run(options: &Options, run_options: &RunOptions) -> Result<()>
 {
     debug!(?run_options);
 
-    let _db = db::Database::connect(&options.db).await?;
+    let db = db::Database::new(&options.db)?;
+    let conn = db.connect().await?;
+    let _ = conn;
 
     let mut cfg = scree::Config::new();
     cfg.ping("f43a7112-2a54-4562-8fde-29e27cdf6c02", "server1/backup", Duration::from_secs(3600), Duration::from_secs(600));

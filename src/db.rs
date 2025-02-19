@@ -1,10 +1,50 @@
 use anyhow::{bail, Context, Result};
-use tokio::sync::OnceCell;
+use tokio::sync::{Mutex, OnceCell};
 use tokio::task::JoinHandle;
 use tokio_postgres::{Client, NoTls, Statement};
 use tracing::{debug, error};
 
+
 pub struct Database {
+    config: String,
+    is_initialized: Mutex<bool>,
+}
+
+impl Database {
+
+    pub fn new(config: &str) -> Result<Self>
+    {
+        Ok(Database {
+            config: config.to_string(),
+            is_initialized: Mutex::new(false),
+        })
+    }
+
+    pub async fn connect(&self) -> Result<Connection>
+    {
+        let mut conn = Connection::new(&self.config).await?;
+        self.initialize(&mut conn).await?;
+        Ok(conn)
+    }
+
+    async fn initialize(&self, conn: &mut Connection) -> Result<()>
+    {
+        let mut is_initialized = self.is_initialized.lock().await;
+        if *is_initialized {
+            return Ok(());
+        }
+
+        // Initialize/check/migrate the database schema only on the first connection
+        conn.init_schema().await?;
+
+        *is_initialized = true;
+        Ok(())
+    }
+
+}
+
+
+pub struct Connection {
     pub client: Client,
 
     get_property_stmt: OnceCell<Statement>,
@@ -13,9 +53,9 @@ pub struct Database {
     connection_handle: JoinHandle<()>,
 }
 
-impl Database {
+impl Connection {
 
-    pub async fn connect(config: &str) -> Result<Self>
+    async fn new(config: &str) -> Result<Self>
     {
         // TODO: set up TLS support, see https://docs.rs/tokio-postgres/latest/tokio_postgres/#ssltls-support
         let (client, connection) =
@@ -31,15 +71,18 @@ impl Database {
                 }
             });
 
-        let mut db = Self {
+        Ok(Self {
             client,
             get_property_stmt: OnceCell::new(),
             connection_handle,
-        };
+        })
+    }
 
-        db.init_schema().await?;
-
-        Ok(db)
+    pub async fn close(self) -> Result<()>
+    {
+        // TODO: send cancellation flag to background task, join the connection_handle
+        self.connection_handle.await?;
+        Ok(())
     }
 
     pub async fn get_property(&self, name: &str) -> Result<Option<String>>
