@@ -1,8 +1,10 @@
 use anyhow::{bail, Context, Result};
-use tokio::sync::{Mutex, OnceCell};
+use futures::{stream, StreamExt};
+use tokio::sync::{mpsc, Mutex, OnceCell};
 use tokio::task::JoinHandle;
-use tokio_postgres::{Client, NoTls, Statement};
-use tracing::{debug, error};
+use tokio_postgres::{AsyncMessage, Client, NoTls, Notification, Statement};
+use tokio_util::sync::CancellationToken;
+use tracing::{debug, error, info, warn};
 
 
 pub struct Database {
@@ -49,8 +51,47 @@ pub struct Connection {
 
     get_property_stmt: OnceCell<Statement>,
 
-    #[allow(dead_code)]  // TODO: remove
     connection_handle: JoinHandle<()>,
+    connection_token: CancellationToken,
+    notification_rx: Option<mpsc::UnboundedReceiver<Notification>>,
+}
+
+// The tokio_postgres::Connection performs the actual communication with the database when it is being polled.
+// This should be spawned off into the background.
+async fn poll_postgres_connection<S, T>(mut connection: tokio_postgres::Connection<S, T>, token: CancellationToken, notification_tx: mpsc::UnboundedSender<Notification>)
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+        T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let mut stream = stream::poll_fn(|ctx| connection.poll_message(ctx));
+    loop {
+        tokio::select! {
+            _ = token.cancelled() => {
+                debug!("database connection polling cancelled");
+                break;
+            }
+            msg = stream.next() => {
+                match msg {
+                    Some(Ok(AsyncMessage::Notification(nf))) => {
+                        debug!("notification: {}: {}", nf.channel(), nf.payload());
+                        // a send error only happens if the receiver was dropped or closed; we simply ignore this case and drop the notification
+                        // TODO: if no one is listening to the notifications, the channel will continue to grow (memory leak)
+                        let _ = notification_tx.send(nf);
+                    }
+                    Some(Ok(AsyncMessage::Notice(notice))) =>
+                        info!("{}: {}", notice.severity(), notice.message()),
+                    Some(Ok(other_msg)) =>
+                        warn!("unknown database message: {:?}", other_msg),
+                    Some(Err(e)) => {
+                        error!("database connection error: {}", e);
+                        break;
+                    }
+                    None =>
+                        break,
+                }
+            }
+        }
+    }
 }
 
 impl Connection {
@@ -62,25 +103,31 @@ impl Connection {
             tokio_postgres::connect(config, NoTls).await
             .context("unable to connect to database")?;
 
+        let connection_token = CancellationToken::new();
+        let (notification_tx, notification_rx) = mpsc::unbounded_channel();
+
         // The connection object performs the actual communication with the database,
         // so we spawn it off to run on its own.
-        let connection_handle =
-            tokio::spawn(async move {
-                if let Err(e) = connection.await {
-                    error!("database connection error: {}", e);
-                }
-            });
+        let connection_handle = tokio::spawn(poll_postgres_connection(connection, connection_token.clone(), notification_tx));
 
         Ok(Self {
             client,
             get_property_stmt: OnceCell::new(),
             connection_handle,
+            connection_token,
+            notification_rx: Some(notification_rx),
         })
+    }
+
+    pub fn take_notification_rx(&mut self) -> Option<mpsc::UnboundedReceiver<Notification>>
+    {
+        self.notification_rx.take()
     }
 
     pub async fn close(self) -> Result<()>
     {
-        // TODO: send cancellation flag to background task, join the connection_handle
+        debug!("closing database connection");
+        self.connection_token.cancel();
         self.connection_handle.await?;
         Ok(())
     }
@@ -95,7 +142,7 @@ impl Connection {
         Ok(value_opt)
     }
 
-    #[allow(dead_code)]  // TODO: remove
+    #[allow(unused)]  // TODO: remove
     pub async fn set_property(&self, name: &str, value: &str) -> Result<()>
     {
         self.client.execute(r#"
@@ -105,7 +152,7 @@ impl Connection {
         Ok(())
     }
 
-    #[allow(dead_code)]  // TODO: remove
+    #[allow(unused)]  // TODO: remove
     pub async fn delete_property(&self, name: &str) -> Result<()>
     {
         self.client.execute(r#"
@@ -186,7 +233,7 @@ impl Connection {
     {
         let schema_version = self.get_schema_version().await?
             .context("unable to determine database schema version")?;
-        debug!("Database schema version: {}", schema_version);
+        debug!("database schema version: {}", schema_version);
 
         if schema_version < Self::SCHEMA_VERSION {
             todo!("upgrade schema");

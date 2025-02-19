@@ -36,12 +36,20 @@ async fn run(options: &Options, run_options: &RunOptions) -> Result<()>
     debug!(?run_options);
 
     let db = db::Database::new(&options.db)?;
-    let conn = db.connect().await?;
-    let _ = conn;
+    let mut conn = db.connect().await?;
+    let _nf_rx = conn.take_notification_rx().expect("notification receiver is available");
+
+    conn.client.batch_execute(r"
+        LISTEN my_channel;
+        NOTIFY my_channel, 'hello!';
+        NOTIFY my_channel, 'good bye!';
+    ").await?;
 
     let mut cfg = scree::Config::new();
     cfg.ping("f43a7112-2a54-4562-8fde-29e27cdf6c02", "server1/backup", Duration::from_secs(3600), Duration::from_secs(600));
     scree::run(cfg).await?;
+
+    conn.close().await?;
 
     Ok(())
 }
