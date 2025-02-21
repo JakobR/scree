@@ -3,6 +3,7 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.11";
     crane.url = "github:ipetkov/crane";
     flake-utils.url = "github:numtide/flake-utils";
+    flake-compat.url = "github:edolstra/flake-compat";
   };
 
   outputs = {
@@ -18,9 +19,6 @@
       craneLib = crane.mkLib pkgs;
 
       inherit (pkgs) lib;
-
-
-      # PKG_CONFIG_PATH = "${pkgs.openssl.dev}/lib/pkgconfig";
 
       htmlFilter = path: _type: null != builtins.match ".*html$" path;
       htmlOrCargo = path: type: (htmlFilter path type) || (craneLib.filterCargoSources path type);
@@ -79,8 +77,7 @@
         # MY_CUSTOM_DEVELOPMENT_VAR = "something else";
 
         # Extra inputs can be added here; cargo and rustc are provided by default.
-        packages = [
-            pkgs.nil
+        packages = with pkgs; [
         ];
       };
     });
