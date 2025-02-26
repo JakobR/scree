@@ -7,6 +7,18 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 
+pub mod ping;
+pub mod util;
+
+
+// convenience function
+pub async fn connect(config: &str) -> Result<Connection>
+{
+    let db = Database::new(config)?;
+    db.connect().await
+}
+
+
 pub struct Database {
     config: String,
     is_initialized: Mutex<bool>,
@@ -226,9 +238,11 @@ impl Connection {
             CREATE TABLE ping_monitors
             ( id SERIAL PRIMARY KEY
             , token TEXT UNIQUE NOT NULL COLLATE case_insensitive
-            , name TEXT NOT NULL
-            , period_ns INTEGER NOT NULL
-            , grace_ns INTEGER NOT NULL
+            , name TEXT UNIQUE NOT NULL
+            , period_s INTEGER NOT NULL
+                CONSTRAINT period_positive CHECK (period_s > 0)
+            , grace_s INTEGER NOT NULL
+                CONSTRAINT grace_nonnegative CHECK (grace_s >= 0)
             );
 
             CREATE TABLE ping_events

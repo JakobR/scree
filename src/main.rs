@@ -1,12 +1,13 @@
 use std::time::Duration;
 
 use anyhow::Result;
-use cli::{Command, Options, PingOptions, RunOptions};
-use tracing::{debug, info};
+use cli::{Command, Options, RunOptions};
+use tracing::debug;
 use tracing_subscriber::EnvFilter;
 
 mod cli;
 mod db;
+mod ping;
 
 #[tokio::main]
 async fn main() -> Result<()>
@@ -18,23 +19,14 @@ async fn main() -> Result<()>
 
     match &options.command {
         Command::Ping(ping_options) =>
-            ping(&options, &ping_options).await,
+            ping::execute_command(&options, &ping_options).await,
         Command::Run(run_options) =>
             run(&options, &run_options).await,
     }
 }
 
-async fn ping(_options: &Options, ping_options: &PingOptions) -> Result<()>
-{
-    debug!(?ping_options);
-    info!("Hello World!");
-    todo!()
-}
-
 async fn run(options: &Options, run_options: &RunOptions) -> Result<()>
 {
-    debug!(?run_options);
-
     let db = db::Database::new(&options.db)?;
     let mut conn = db.connect().await?;
     let _nf_rx = conn.take_notification_rx().expect("notification receiver is available");
@@ -46,9 +38,17 @@ async fn run(options: &Options, run_options: &RunOptions) -> Result<()>
         NOTIFY my_channel, 'good bye!';
     ").await?;
 
+    // TODO: on a db change notification (ping_monitors_changed):
+    // - reload monitors immediately, unless reload happened previously within the last 5 seconds (basic rate limit).
+    // - for now, just reload all the monitors instead of keeping track of fine-grained changes.
+    // - take care to update state atomically, or take some kind of lock, to make sure we do not lose any updates while reloading
+    //   (it is fine to miss updates for newly added items until the first reload happens)
+
     let mut cfg = scree::Config::new();
     cfg.ping("f43a7112-2a54-4562-8fde-29e27cdf6c02", "server1/backup", Duration::from_secs(3600), Duration::from_secs(600));
     scree::run(cfg).await?;
+
+    let _ = run_options;
 
     conn.close().await?;
 

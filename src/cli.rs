@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+use humantime::Duration;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -22,7 +23,7 @@ impl Options {
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
-    /// Commands related to pings.
+    /// Commands related to ping monitors.
     Ping(PingOptions),
     /// Run the scree server (service monitoring, alerts, dashboard).
     Run(RunOptions),
@@ -34,10 +35,24 @@ pub struct PingOptions {
     pub command: PingCommand,
 }
 
-#[derive(Parser, Debug)]
+#[derive(Subcommand, Debug)]
 pub enum PingCommand {
-    /// List the registered pings.
+    /// Create a new ping monitor.
+    Create(PingCreateOptions),
+    /// List the registered ping monitors.
     List,
+}
+
+#[derive(Parser, Debug)]
+pub struct PingCreateOptions {
+    /// Name of the new ping monitor.
+    pub name: String,
+    /// Expected time between pings.
+    pub period: Duration,
+    /// Grace period: when a deadline is missed, the monitor will be considered
+    /// in a warning state for this amount of time, and will enter an error
+    /// state only after the grace period expires as well.
+    pub grace: Option<Duration>,
 }
 
 #[derive(Parser, Debug)]
