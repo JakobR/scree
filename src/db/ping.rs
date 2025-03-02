@@ -36,6 +36,7 @@ impl TryFrom<&Row> for PingMonitor {
     }
 }
 
+#[allow(unused)]  // TODO: remove
 pub async fn get_all(conn: &super::Connection) -> Result<Vec<WithId<PingMonitor>>>
 {
     let rows = conn.client.query(/*sql*/ r"

@@ -4,7 +4,7 @@ use tokio::sync::{mpsc, Mutex, OnceCell};
 use tokio::task::JoinHandle;
 use tokio_postgres::{AsyncMessage, Client, Notification, Statement};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, warn};
 
 
 pub mod ping;
@@ -92,8 +92,18 @@ async fn poll_postgres_connection<S, T>(mut connection: tokio_postgres::Connecti
                         // TODO: if no one is listening to the notifications, the channel will continue to grow (memory leak)
                         let _ = notification_tx.send(nf);
                     }
-                    Some(Ok(AsyncMessage::Notice(notice))) =>
-                        info!("{}: {}", notice.severity(), notice.message()),
+                    Some(Ok(AsyncMessage::Notice(notice))) => {
+                        // See https://www.postgresql.org/docs/current/protocol-error-fields.html
+                        match notice.severity() {
+                            "NOTICE" | "DEBUG" | "INFO" | "LOG" =>
+                                debug!("{}: {}", notice.severity(), notice.message()),
+                            "WARNING" =>
+                                warn!("{}: {}", notice.severity(), notice.message()),
+                            _ =>
+                                // covers ERROR, FATAL, PANIC
+                                error!("{}: {}", notice.severity(), notice.message()),
+                        };
+                    }
                     Some(Ok(other_msg)) =>
                         warn!("unknown database message: {:?}", other_msg),
                     Some(Err(e)) => {

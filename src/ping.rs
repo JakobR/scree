@@ -86,7 +86,7 @@ fn format_last_ping_delta(now: DateTime<Utc>, last_ping_at: DateTime<Utc>) -> St
         Ok(d) => {
             let d = Duration::from_secs(d.as_secs());  // truncate sub-seconds
             format!("{} ago", humantime::Duration::from(d))
-        },
+        }
         Err(_e) => "error: out of range".to_string(),
     }
 }
