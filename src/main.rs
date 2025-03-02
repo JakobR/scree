@@ -4,8 +4,16 @@ use tracing::debug;
 use tracing_subscriber::EnvFilter;
 
 mod cli;
-mod cmd;
 mod db;
+
+mod cmd {
+    pub mod ping;
+    pub mod run;
+}
+
+mod util {
+    pub mod signal;
+}
 
 #[tokio::main]
 async fn main() -> Result<()>

@@ -19,6 +19,7 @@ pub async fn execute_command(options: &Options, run_options: &RunOptions) -> Res
 {
     let shutdown_token = CancellationToken::new();
 
+    setup_signal_handling(shutdown_token.clone())?;
     setup_panic_hook(shutdown_token.clone());
 
     let db = db::Database::new(&options.db)?;
@@ -53,6 +54,14 @@ pub async fn execute_command(options: &Options, run_options: &RunOptions) -> Res
     Ok(())
 }
 
+fn setup_signal_handling(shutdown_token: CancellationToken) -> Result<()>
+{
+    crate::util::signal::install_signal_handlers(move || {
+        shutdown_token.cancel();
+    })?;
+    Ok(())
+}
+
 fn setup_panic_hook(shutdown_token: CancellationToken)
 {
     let default_hook = std::panic::take_hook();
@@ -67,8 +76,7 @@ async fn poll_db_notifications(rx: UnboundedReceiver<Notification>, shutdown_tok
 {
     let _ = rx;
     let _ = shutdown_token;
-    sleep(Duration::from_secs(3)).await;
-    todo!("blah");
+    // TODO
 }
 
 async fn run_server(listen_addr: SocketAddr, shutdown_token: CancellationToken) -> Result<()>
