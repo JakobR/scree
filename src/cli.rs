@@ -1,3 +1,5 @@
+use std::net::SocketAddr;
+
 use clap::{Parser, Subcommand};
 use humantime::Duration;
 
@@ -57,4 +59,6 @@ pub struct PingCreateOptions {
 
 #[derive(Parser, Debug)]
 pub struct RunOptions {
+    #[arg(long = "listen", default_value_t = ([127, 0, 0, 1], 3000).into())]
+    pub listen_addr: SocketAddr,
 }
