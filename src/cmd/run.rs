@@ -1,5 +1,4 @@
 use std::net::SocketAddr;
-use std::time::Duration;
 
 use anyhow::Result;
 use axum::extract::{Path, State};
@@ -7,13 +6,13 @@ use axum::http::StatusCode;
 use axum::routing::get;
 use axum::Router;
 use tokio::sync::mpsc::UnboundedReceiver;
-use tokio::time::sleep;
+use tokio::task::JoinHandle;
 use tokio_postgres::Notification;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 
 use crate::cli::{Options, RunOptions};
-use crate::db;
+use crate::db::{Connection, Database};
 
 pub async fn execute_command(options: &Options, run_options: &RunOptions) -> Result<()>
 {
@@ -22,24 +21,10 @@ pub async fn execute_command(options: &Options, run_options: &RunOptions) -> Res
     setup_signal_handling(shutdown_token.clone())?;
     setup_panic_hook(shutdown_token.clone());
 
-    let db = db::Database::new(&options.db)?;
+    let db = Database::new(&options.db)?;
     let mut conn = db.connect().await?;
 
-    let nf_rx = conn.take_notification_rx().expect("notification receiver is available");
-    let nf_handle = tokio::spawn(poll_db_notifications(nf_rx, shutdown_token.clone()));
-
-    conn.client.batch_execute(r"
-        LISTEN ping_monitors_changed;
-        LISTEN my_channel;
-        NOTIFY my_channel, 'hello!';
-        NOTIFY my_channel, 'good bye!';
-    ").await?;
-
-    // TODO: on a db change notification (ping_monitors_changed):
-    // - reload monitors immediately, unless reload happened previously within the last 5 seconds (basic rate limit).
-    // - for now, just reload all the monitors instead of keeping track of fine-grained changes.
-    // - take care to update state atomically, or take some kind of lock, to make sure we do not lose any updates while reloading
-    //   (it is fine to miss updates for newly added items until the first reload happens)
+    let nf_handle = setup_db_notifications(&mut conn).await?;
 
     let server_handle = tokio::spawn(
         run_server(run_options.listen_addr, shutdown_token.clone())
@@ -48,8 +33,8 @@ pub async fn execute_command(options: &Options, run_options: &RunOptions) -> Res
     shutdown_token.cancelled().await;
 
     server_handle.await??;
-    nf_handle.await?;
     conn.close().await?;
+    nf_handle.await?;  // stops after conn.close()
 
     Ok(())
 }
@@ -72,11 +57,37 @@ fn setup_panic_hook(shutdown_token: CancellationToken)
     }));
 }
 
-async fn poll_db_notifications(rx: UnboundedReceiver<Notification>, shutdown_token: CancellationToken)
+async fn setup_db_notifications(conn: &mut Connection) -> Result<JoinHandle<()>>
 {
-    let _ = rx;
-    let _ = shutdown_token;
-    // TODO
+    let rx = conn.take_notification_rx().expect("notification receiver is available");
+    let handle = tokio::spawn(poll_db_notifications(rx));
+
+    conn.client.batch_execute(/*sql*/ r"
+        LISTEN ping_monitors_changed;
+    ").await?;
+
+    Ok(handle)
+}
+
+async fn poll_db_notifications(mut rx: UnboundedReceiver<Notification>)
+{
+    while let Some(nf) = rx.recv().await {
+        match nf.channel() {
+            "ping_monitors_changed" => on_ping_monitors_changed().await,
+            _channel => warn!("unhandled notification: {:?}", nf),
+        }
+    }
+    // notifications channel has closed
+    debug!("poll_db_notifications stopped");
+}
+
+async fn on_ping_monitors_changed()
+{
+    // TODO: on a db change notification (ping_monitors_changed):
+    // - reload monitors immediately, unless reload happened previously within the last 5 seconds (basic rate limit).
+    // - for now, just reload all the monitors instead of keeping track of fine-grained changes.
+    // - take care to update state atomically, or take some kind of lock, to make sure we do not lose any updates while reloading
+    //   (it is fine to miss updates for newly added items until the first reload happens)
 }
 
 async fn run_server(listen_addr: SocketAddr, shutdown_token: CancellationToken) -> Result<()>
