@@ -1,18 +1,74 @@
 use std::net::SocketAddr;
+use std::ops::Deref;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::routing::get;
 use axum::Router;
-use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
+use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tokio_postgres::Notification;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::cli::{Options, RunOptions};
 use crate::db::{Connection, Database};
+
+#[derive(Debug, Clone)]
+struct App {
+    inner: Arc<AppData>,
+}
+
+impl Deref for App {
+    type Target = AppData;
+
+    fn deref(&self) -> &Self::Target {
+        self.inner.deref()
+    }
+}
+
+impl From<AppData> for App {
+    fn from(inner: AppData) -> Self {
+        Self { inner: Arc::new(inner) }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct AppData {
+    min_reload_interval: Duration,
+    shutdown_token: CancellationToken,
+    state: Arc<Mutex<AppState>>,
+}
+
+impl AppData {
+    fn new(shutdown_token: CancellationToken) -> Self
+    {
+        Self {
+            min_reload_interval: Duration::from_secs(5),
+            shutdown_token,
+            state: Arc::new(Mutex::new(AppState::new())),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct AppState {
+    last_reload: Instant,
+}
+
+impl AppState {
+    fn new() -> Self
+    {
+        Self {
+            last_reload: Instant::now(),
+        }
+    }
+}
+
 
 pub async fn execute_command(options: &Options, run_options: &RunOptions) -> Result<()>
 {
@@ -24,10 +80,12 @@ pub async fn execute_command(options: &Options, run_options: &RunOptions) -> Res
     let db = Database::new(&options.db)?;
     let mut conn = db.connect().await?;
 
-    let nf_handle = setup_db_notifications(&mut conn).await?;
+    let app: App = AppData::new(shutdown_token.clone()).into();
+
+    let nf_handle = setup_db_notifications(&mut conn, app.clone()).await?;
 
     let server_handle = tokio::spawn(
-        run_server(run_options.listen_addr, shutdown_token.clone())
+        run_server(run_options.listen_addr, app)
     );
 
     shutdown_token.cancelled().await;
@@ -57,10 +115,14 @@ fn setup_panic_hook(shutdown_token: CancellationToken)
     }));
 }
 
-async fn setup_db_notifications(conn: &mut Connection) -> Result<JoinHandle<()>>
+async fn setup_db_notifications(conn: &mut Connection, app: App) -> Result<JoinHandle<()>>
 {
+    let (reload_tx, reload_rx) = mpsc::unbounded_channel();
+
+    let _reload_handle = tokio::spawn(process_reload_requests(reload_rx, reload_tx.clone(), app));
+
     let rx = conn.take_notification_rx().expect("notification receiver is available");
-    let handle = tokio::spawn(poll_db_notifications(rx));
+    let handle = tokio::spawn(poll_db_notifications(rx, reload_tx));
 
     conn.client.batch_execute(/*sql*/ r"
         LISTEN ping_monitors_changed;
@@ -69,11 +131,15 @@ async fn setup_db_notifications(conn: &mut Connection) -> Result<JoinHandle<()>>
     Ok(handle)
 }
 
-async fn poll_db_notifications(mut rx: UnboundedReceiver<Notification>)
+async fn poll_db_notifications(mut rx: UnboundedReceiver<Notification>, reload_tx: UnboundedSender<ReloadRequest>)
 {
     while let Some(nf) = rx.recv().await {
         match nf.channel() {
-            "ping_monitors_changed" => on_ping_monitors_changed().await,
+            "ping_monitors_changed" => {
+                // we do not care whether the channel is closed
+                let _ = reload_tx.send(ReloadRequest::new());
+            }
+            //on_ping_monitors_changed(&app).await,
             _channel => warn!("unhandled notification: {:?}", nf),
         }
     }
@@ -81,28 +147,79 @@ async fn poll_db_notifications(mut rx: UnboundedReceiver<Notification>)
     debug!("poll_db_notifications stopped");
 }
 
-async fn on_ping_monitors_changed()
+struct ReloadRequest {
+    timestamp: Instant,
+}
+
+impl ReloadRequest {
+    fn new() -> Self {
+        ReloadRequest { timestamp: Instant::now() }
+    }
+}
+
+async fn process_reload_requests(mut reload_rx: UnboundedReceiver<ReloadRequest>, reload_tx: UnboundedSender<ReloadRequest>, app: App)
 {
-    // TODO: on a db change notification (ping_monitors_changed):
+    // On a db change notification (ping_monitors_changed):
     // - reload monitors immediately, unless reload happened previously within the last 5 seconds (basic rate limit).
     // - for now, just reload all the monitors instead of keeping track of fine-grained changes.
     // - take care to update state atomically, or take some kind of lock, to make sure we do not lose any updates while reloading
     //   (it is fine to miss updates for newly added items until the first reload happens)
+    loop {
+        let req = tokio::select! {
+            _ = app.shutdown_token.cancelled() => break,
+            Some(req) = reload_rx.recv() => req,
+            else => break,
+        };
+
+        let mut state_guard = app.state.lock().await;
+        let state = &mut *state_guard;
+
+        // drop outdated requests
+        // (this may happen if multiple requests arrive before a reload is completed)
+        if req.timestamp < state.last_reload {
+            continue;
+        }
+
+        let now = Instant::now();
+        let elapsed = now.duration_since(state.last_reload);
+
+        if elapsed >= app.min_reload_interval {
+            if let Err(e) = reload_ping_monitors(&app, state).await.context("reloading ping monitors") {
+                error!("error: {:#}", e);
+            }
+            state.last_reload = now;
+        }
+        else {
+            drop(state_guard);
+            let remaining_time = app.min_reload_interval - elapsed;
+            let reload_tx = reload_tx.clone();
+            // send the request again later
+            tokio::spawn(async move {
+                tokio::time::sleep(remaining_time).await;
+                let _ = reload_tx.send(req);
+            });
+        }
+    }
+    debug!("process_reload_requests stopped");
 }
 
-async fn run_server(listen_addr: SocketAddr, shutdown_token: CancellationToken) -> Result<()>
+async fn reload_ping_monitors(_app: &App, _state: &mut AppState) -> Result<()>
 {
-    let state = ();
+    info!("reloading ping monitors");
+    Ok(())
+}
 
-    let app = Router::new()
+async fn run_server(listen_addr: SocketAddr, app: App) -> Result<()>
+{
+    let router = Router::new()
         .route("/", get(dashboard))
         .route("/ping/{token}", get(ping))
-        .with_state(state.clone());
+        .with_state(app.clone());
 
-    tracing::debug!("Listening on {}", listen_addr);
+    tracing::debug!("listening on {}", listen_addr);
     let listener = tokio::net::TcpListener::bind(listen_addr).await?;
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_token.cancelled_owned())
+    axum::serve(listener, router)
+        .with_graceful_shutdown(app.shutdown_token.clone().cancelled_owned())
         .await?;
 
     Ok(())
@@ -113,7 +230,7 @@ async fn dashboard() -> &'static str
     "Hello World!"
 }
 
-async fn ping(_state: State<()>, Path(token): Path<String>) -> Result<String, StatusCode>
+async fn ping(_app: State<App>, Path(token): Path<String>) -> Result<String, StatusCode>
 {
     debug!(?token);
 
