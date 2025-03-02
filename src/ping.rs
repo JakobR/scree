@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use anyhow::Result;
-use tracing::debug;
+use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use crate::cli::{Options, PingCommand, PingCreateOptions, PingOptions};
@@ -41,8 +41,52 @@ pub async fn create(options: &Options, create_options: &PingCreateOptions) -> Re
 async fn list(options: &Options) -> Result<()>
 {
     let conn = db::connect(&options.db).await?;
-    let pings = db::ping::get_all(&conn).await?;
+    let pings = db::ping::get_all_with_stats(&conn).await?;
 
-    debug!(?pings);
-    todo!()  // TODO: display the list as ASCII table (id/token/name/period/grace). could also have a --csv flag
+    use comfy_table::{Cell, CellAlignment, Table};
+
+    let mut table = Table::new();
+    table.load_preset(comfy_table::presets::NOTHING);
+
+    table.set_header(["ID", "TOKEN", "NAME", "PERIOD", "GRACE", "PINGS", "LAST_PING"]);
+
+    let now = chrono::Utc::now();
+
+    for (pm, stats) in pings {
+        let last_ping_str =
+            if let Some(last_ping_at) = stats.last_ping_at {
+                format!("{} ({})", last_ping_at.format("%F %T %:z").to_string(), format_last_ping_delta(now, last_ping_at))
+            } else {
+                "".to_string()
+            };
+
+        table.add_row([
+            Cell::new(pm.id).set_alignment(CellAlignment::Right),
+            Cell::new(&pm.token),
+            Cell::new(&pm.name),
+            Cell::new(humantime::Duration::from(pm.period)).set_alignment(CellAlignment::Right),
+            Cell::new(humantime::Duration::from(pm.grace)).set_alignment(CellAlignment::Right),
+            Cell::new(stats.num_pings).set_alignment(CellAlignment::Right),
+            Cell::new(last_ping_str),
+        ]);
+    }
+
+    println!("{}", table);
+
+    Ok(())
+
+}
+
+fn format_last_ping_delta(now: DateTime<Utc>, last_ping_at: DateTime<Utc>) -> String {
+    if now < last_ping_at {
+        return "error: in the future".to_string();
+    }
+
+    match (now - last_ping_at).to_std() {
+        Ok(d) => {
+            let d = Duration::from_secs(d.as_secs());  // truncate sub-seconds
+            format!("{} ago", humantime::Duration::from(d))
+        },
+        Err(_e) => "error: out of range".to_string(),
+    }
 }
