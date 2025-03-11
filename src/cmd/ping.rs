@@ -24,6 +24,7 @@ pub async fn create(options: &Options, create_options: &PingCreateOptions) -> Re
         name: create_options.name.clone(),
         period: create_options.period.into(),
         grace: create_options.grace.map(Into::into).unwrap_or(Duration::ZERO),
+        created_at: Utc::now(),
     };
 
     let conn = db::connect(&options.db).await?;
@@ -48,7 +49,7 @@ async fn list(options: &Options) -> Result<()>
     let mut table = Table::new();
     table.load_preset(comfy_table::presets::NOTHING);
 
-    table.set_header(["ID", "TOKEN", "NAME", "PERIOD", "GRACE", "PINGS", "LAST_PING"]);
+    table.set_header(["ID", "TOKEN", "NAME", "PERIOD", "GRACE", "CREATED", "PINGS", "LAST_PING"]);
 
     let now = chrono::Utc::now();
 
@@ -66,6 +67,7 @@ async fn list(options: &Options) -> Result<()>
             Cell::new(&pm.name),
             Cell::new(humantime::Duration::from(pm.period)).set_alignment(CellAlignment::Right),
             Cell::new(humantime::Duration::from(pm.grace)).set_alignment(CellAlignment::Right),
+            Cell::new(pm.created_at.format("%F %T %:z")),
             Cell::new(stats.num_pings).set_alignment(CellAlignment::Right),
             Cell::new(last_ping_str),
         ]);

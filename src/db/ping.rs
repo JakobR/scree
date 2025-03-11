@@ -19,6 +19,8 @@ pub struct PingMonitor {
     pub period: Duration,
     /// Amount of time after a missed deadline before this item is considered to be in error state.
     pub grace: Duration,
+    /// The timestamp when this ping monitor was created.
+    pub created_at: DateTime<Utc>,
 }
 
 impl TryFrom<&Row> for PingMonitor {
@@ -32,7 +34,8 @@ impl TryFrom<&Row> for PingMonitor {
         let period = Duration::from_secs(period_s.try_into()?);
         let grace_s: i32 = row.try_get("grace_s")?;
         let grace = Duration::from_secs(grace_s.try_into()?);
-        Ok(PingMonitor { token, name, period, grace })
+        let created_at = row.try_get("created_at")?;
+        Ok(PingMonitor { token, name, period, grace, created_at })
     }
 }
 
@@ -84,6 +87,7 @@ pub async fn get_all_with_stats(conn: &super::Connection) -> Result<Vec<(WithId<
             pm.name AS name,
             pm.period_s AS period_s,
             pm.grace_s AS grace_s,
+            pm.created_at AS created_at,
             COALESCE(re.count, 0) AS num_pings,
             re.occurred_at AS last_ping_at
         FROM ping_monitors AS pm
@@ -106,16 +110,16 @@ pub async fn insert(conn: &super::Connection, ping: &PingMonitor) -> Result<Id>
     let grace_s: i32 = ping.grace.as_secs().try_into().context("grace")?;
 
     if period_s <= 0 {
-        bail!("period must be greater than 0");
+        bail!("period must be at least 1 second");
     }
 
     assert!(grace_s >= 0);
 
     let row = conn.client.query_one(/*sql*/ r"
-        INSERT INTO ping_monitors (token, name, period_s, grace_s)
-        VALUES ($1, $2, $3, $4)
+        INSERT INTO ping_monitors (token, name, period_s, grace_s, created_at)
+        VALUES ($1, $2, $3, $4, $5)
         RETURNING id
-    ", &[ &ping.token, &ping.name, &period_s, &grace_s ]).await?;
+    ", &[ &ping.token, &ping.name, &period_s, &grace_s, &ping.created_at ]).await?;
 
     let id = row.try_get(0)?;
     debug!("new id: {id}");

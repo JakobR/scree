@@ -253,12 +253,13 @@ impl Connection {
                 CONSTRAINT period_positive CHECK (period_s > 0)
             , grace_s INTEGER NOT NULL
                 CONSTRAINT grace_nonnegative CHECK (grace_s >= 0)
+            , created_at TIMESTAMP WITH TIME ZONE NOT NULL
             );
 
             CREATE TABLE ping_events
             ( id SERIAL PRIMARY KEY
             , monitor_id INTEGER NOT NULL REFERENCES ping_monitors(id)
-            , occurred_at TIMESTAMP WITH TIME ZONE
+            , occurred_at TIMESTAMP WITH TIME ZONE NOT NULL
             );
 
             CREATE FUNCTION notify_ping_monitors_change() RETURNS TRIGGER AS $$
