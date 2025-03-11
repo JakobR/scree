@@ -1,4 +1,5 @@
 use anyhow::{bail, Context, Result};
+use deadpool_postgres::Pool;
 use futures::{stream, StreamExt};
 use tokio::sync::{mpsc, Mutex, OnceCell};
 use tokio::task::JoinHandle;
@@ -55,8 +56,42 @@ impl Database {
         Ok(())
     }
 
+    pub async fn connect_pool(&self) -> Result<Pool>
+    {
+        let is_initialized = *self.is_initialized.lock().await;
+        if !is_initialized {
+            bail!("please initialize the database before creating a connection pool");
+        }
+
+        let pg_config = self.config.parse::<tokio_postgres::Config>()?;
+        let mgr_config = deadpool_postgres::ManagerConfig {
+            recycling_method: deadpool_postgres::RecyclingMethod::Verified,
+        };
+        let connector = tls_connector()?;
+        let mgr = deadpool_postgres::Manager::from_config(pg_config, connector, mgr_config);
+        let pool = Pool::builder(mgr).max_size(8).build()?;
+        Ok(pool)
+    }
+
 }
 
+
+fn tls_connector() -> Result<postgres_native_tls::MakeTlsConnector>
+{
+    let connector = native_tls::TlsConnector::builder()
+        .min_protocol_version(Some(native_tls::Protocol::Tlsv12))
+        .build()?;
+    let connector = postgres_native_tls::MakeTlsConnector::new(connector);
+    Ok(connector)
+}
+
+
+// TODO:
+// - we might want to rename 'Connection' to NotificationDispatcher or similar (and possibly hide it from the user)
+// - do not give out the underlying Client
+// - add method "listen" to add new subscriptions
+// - keep track of subscriptions. "listen" hands out a token, on Drop of the token the counter of active subscribers is reduced, when the counter hits 0 send UNLISTEN to the database
+// - if the connection fails due to network error, try to re-connect
 
 pub struct Connection {
     pub client: Client,
@@ -122,11 +157,7 @@ impl Connection {
 
     async fn new(config: &str) -> Result<Self>
     {
-        let connector = native_tls::TlsConnector::builder()
-            .min_protocol_version(Some(native_tls::Protocol::Tlsv12))
-            .build()?;
-        let connector = postgres_native_tls::MakeTlsConnector::new(connector);
-
+        let connector = tls_connector()?;
         let (client, connection) =
             tokio_postgres::connect(config, connector).await
             .context("unable to connect to database")?;
