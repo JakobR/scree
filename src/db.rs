@@ -205,27 +205,26 @@ impl Connection {
         Ok(value_opt)
     }
 
-    #[allow(unused)]  // TODO: remove
-    pub async fn set_property(&self, name: &str, value: &str) -> Result<()>
+    pub async fn set_property(&self, name: &str, value: Option<&str>) -> Result<()>
     {
-        let stmt = self.set_property_stmt.get_or_try_init(|| {
-            self.client.prepare(/*sql*/ r"
-                INSERT OR REPLACE INTO scree_properties (name, value) VALUES ($1, $2)
-            ")
-        }).await?;
-        self.client.execute(stmt, &[&name, &value]).await?;
-        Ok(())
-    }
-
-    #[allow(unused)]  // TODO: remove
-    pub async fn delete_property(&self, name: &str) -> Result<()>
-    {
-        let stmt = self.delete_property_stmt.get_or_try_init(|| {
-            self.client.prepare(/*sql*/ r"
-                DELETE FROM scree_properties WHERE name = $1
-            ")
-        }).await?;
-        self.client.execute(stmt, &[&name]).await?;
+        match value {
+            Some(value) => {
+                let stmt = self.set_property_stmt.get_or_try_init(|| {
+                    self.client.prepare(/*sql*/ r"
+                        INSERT OR REPLACE INTO scree_properties (name, value) VALUES ($1, $2)
+                    ")
+                }).await?;
+                self.client.execute(stmt, &[&name, &value]).await?;
+            }
+            None => {
+                let stmt = self.delete_property_stmt.get_or_try_init(|| {
+                    self.client.prepare(/*sql*/ r"
+                        DELETE FROM scree_properties WHERE name = $1
+                    ")
+                }).await?;
+                self.client.execute(stmt, &[&name]).await?;
+            }
+        }
         Ok(())
     }
 
