@@ -3,11 +3,12 @@ use deadpool_postgres::Pool;
 use futures::{stream, StreamExt};
 use tokio::sync::{mpsc, Mutex, OnceCell};
 use tokio::task::JoinHandle;
-use tokio_postgres::{AsyncMessage, Client, Notification, Statement};
+use tokio_postgres::{AsyncMessage, Client, GenericClient, Notification, Statement};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, warn};
 
 
+pub mod alert;
 pub mod ping;
 pub mod util;
 
@@ -84,6 +85,34 @@ fn tls_connector() -> Result<postgres_native_tls::MakeTlsConnector>
     let connector = postgres_native_tls::MakeTlsConnector::new(connector);
     Ok(connector)
 }
+
+
+pub async fn get_property(db: &impl GenericClient, name: &str) -> Result<Option<String>>
+{
+    let row_opt = db.query_opt(/*sql*/ r"
+        SELECT value FROM scree_properties WHERE name = $1
+    ", &[&name]).await?;
+    let value_opt = row_opt.map(|row| row.try_get(0)).transpose()?;
+    Ok(value_opt)
+}
+
+pub async fn set_property(db: &impl GenericClient, name: &str, value: Option<&str>) -> Result<()>
+{
+    match value {
+        Some(value) => {
+            db.execute(/*sql*/ r"
+                INSERT OR REPLACE INTO scree_properties (name, value) VALUES ($1, $2)
+            ", &[&name, &value]).await?;
+        }
+        None => {
+            db.execute(/*sql*/ r"
+                DELETE FROM scree_properties WHERE name = $1
+            ", &[&name]).await?;
+        }
+    }
+    Ok(())
+}
+
 
 
 // TODO:
@@ -316,6 +345,7 @@ impl Connection {
 
             CREATE TABLE alert_history
             ( id SERIAL PRIMARY KEY
+            , subject TEXT NOT NULL
             , message TEXT NOT NULL
             , channel TEXT NOT NULL
             , created_at TIMESTAMP WITH TIME ZONE NOT NULL

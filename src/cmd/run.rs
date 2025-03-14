@@ -19,6 +19,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 use crate::cli::{Options, RunOptions};
+use crate::db::alert::Alert;
 use crate::db::ping::{MonitorState, PingMonitor, Stats};
 use crate::db::util::WithId;
 use crate::db::{self, Connection, Database};
@@ -440,8 +441,8 @@ async fn check_deadlines(app: &App) -> Result<()>
     let mut state_guard = app.state.lock().await;
     let state = &mut *state_guard;
 
-    let db_guard = app.db_pool.get().await?;
-    let db = &*db_guard;
+    let mut db_guard = app.db_pool.get().await?;
+    let db = &mut *db_guard;
 
     info!("checking deadlines");
 
@@ -454,10 +455,10 @@ async fn check_deadlines(app: &App) -> Result<()>
 
         let result =
             if pm.deadlines.fail_at <= now {
-                on_deadline_expired(app, db, pm, MonitorState::Failed, now).await
+                on_deadline_expired(db, pm, MonitorState::Failed, now).await
             }
             else if pm.deadlines.warn_at <= now {
-                on_deadline_expired(app, db, pm, MonitorState::Warning, now).await
+                on_deadline_expired(db, pm, MonitorState::Warning, now).await
             }
             else {
                 error!("unreachable (pm.id={}, warn_at={}, fail_at={}, now={})", pm.id, pm.deadlines.warn_at, pm.deadlines.fail_at, now);
@@ -473,7 +474,7 @@ async fn check_deadlines(app: &App) -> Result<()>
     Ok(())
 }
 
-async fn on_deadline_expired(app: &App, db: &ClientWrapper, pm: &mut PingMonitorExt, new_state: MonitorState, expired_at: DateTime<Utc>) -> Result<()>
+async fn on_deadline_expired(db: &mut ClientWrapper, pm: &mut PingMonitorExt, new_state: MonitorState, expired_at: DateTime<Utc>) -> Result<()>
 {
     if pm.stats.state == new_state {
         bail!("state unchanged: pm={:?} new_state={:?} now={}", pm, new_state, expired_at)
@@ -484,16 +485,22 @@ async fn on_deadline_expired(app: &App, db: &ClientWrapper, pm: &mut PingMonitor
     pm.stats.state_since = expired_at;
 
     if new_state == MonitorState::Failed {
-        send_alert(app, db, pm, expired_at).await?;
+        send_alert(db, pm, expired_at).await?;
     }
 
     Ok(())
 }
 
-async fn send_alert(app: &App, db: &ClientWrapper, pm: &PingMonitorExt, occurred_at: DateTime<Utc>) -> Result<()>
+    // TODO: daily email report/reminder at 5:00 a.m. (configurable) that lists all failed monitors
+    //       also list monitors that failed only briefly during the day (see state change history ... maybe just list out all state changes during the day (after the list of failed monitors))
+    //       don't send if nothing happened
+
+    // TODO: weekly report at Sunday 11:00 a.m. (configurable) that is always sent, even if everything is OK.
+
+async fn send_alert(db: &mut ClientWrapper, pm: &PingMonitorExt, occurred_at: DateTime<Utc>) -> Result<()>
 {
-    // let subject =
-    //     format!("Failed: {}", pm.name);
+    let subject =
+        format!("Failed: {}", pm.name);
 
     let message =
         match pm.stats.last_ping_at {
@@ -503,18 +510,8 @@ async fn send_alert(app: &App, db: &ClientWrapper, pm: &PingMonitorExt, occurred
                 format!("Ping monitor failed: {} (never pinged)", pm.name),
         };
 
-    // TODO: try to send email, telegram message, ... according to configuration; if it succeeds set Some(Utc::now())
-    let _ = app;  // get alert target configuration
-    let delivered_at = None;
-    db::ping::record_alert(db.client(), &message, occurred_at, delivered_at).await?;
-
-    // TODO: if delivery fails (delivered_at = None), then we can try to re-send it later.
-
-    // TODO: daily email report/reminder at 5:00 a.m. (configurable) that lists all failed monitors
-    //       also list monitors that failed only briefly during the day (see state change history ... maybe just list out all state changes during the day (after the list of failed monitors))
-    //       don't send if nothing happened
-
-    // TODO: weekly report at Sunday 11:00 a.m. (configurable) that is always sent, even if everything is OK.
+    let alert = Alert { subject, message, created_at: occurred_at };
+    db::alert::send(db.deref_mut(), &alert).await;
 
     Ok(())
 }

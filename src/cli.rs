@@ -27,6 +27,8 @@ impl Options {
 pub enum Command {
     /// Commands related to ping monitors.
     Ping(PingOptions),
+    /// Commands to configure alerts.
+    Alert(AlertOptions),
     /// Run the scree server (service monitoring, alerts, dashboard).
     Run(RunOptions),
 }
@@ -55,6 +57,62 @@ pub struct PingCreateOptions {
     /// in a warning state for this amount of time, and will enter an error
     /// state only after the grace period expires as well.
     pub grace: Option<Duration>,
+}
+
+#[derive(Parser, Debug)]
+pub struct AlertOptions {
+    #[command(subcommand)]
+    pub command: AlertCommand,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum AlertCommand {
+    /// Manage email alerts.
+    Email(EmailOptions),
+    /// Manage Telegram alerts.
+    Telegram(TelegramOptions),
+    /// Send a test alert to all configured targets.
+    Test,
+}
+
+#[derive(Parser, Debug)]
+pub struct EmailOptions {
+    #[command(subcommand)]
+    pub command: TelegramCommand,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum EmailCommand {
+    /// Configure email sending.
+    Configure/* EmailConfigurationOptions: from address, smtp server, credentials, ...)*/,
+    /// Enable email alerts.
+    Enable/* EmailEnableOptions: target address */,
+    /// Disable email alerts.
+    Disable,
+}
+
+#[derive(Parser, Debug)]
+pub struct TelegramOptions {
+    #[command(subcommand)]
+    pub command: TelegramCommand,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum TelegramCommand {
+    /// Enable Telegram alerts.
+    Enable(TelegramEnableOptions),
+    /// Disable Telegram alerts.
+    Disable,
+}
+
+#[derive(Parser, Debug)]
+pub struct TelegramEnableOptions {
+    /// Token of the bot that should send alerts.
+    #[arg(long)]
+    pub bot_token: String,
+    /// Chat id where alerts are sent to.
+    #[arg(long)]
+    pub chat_id: String,
 }
 
 #[derive(Parser, Debug)]

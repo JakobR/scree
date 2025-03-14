@@ -168,12 +168,3 @@ pub async fn record_state_change(db: &impl GenericClient, pm_id: Id, state: Moni
 
     Ok(())
 }
-
-pub async fn record_alert(db: &impl GenericClient, message: &str, created_at: DateTime<Utc>, delivered_at: Option<DateTime<Utc>>) -> Result<()>
-{
-    db.execute(/* sql */ r"
-        INSERT INTO alert_history (message, channel, created_at, delivered_at) VALUES ($1, $2, $3, $4)
-    ", &[&message, &"", &created_at, &delivered_at]).await?;
-
-    Ok(())
-}

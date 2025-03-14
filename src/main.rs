@@ -8,6 +8,7 @@ mod db;
 
 mod cmd {
     pub mod ping;
+    pub mod alert;
     pub mod run;
 }
 
@@ -26,6 +27,8 @@ async fn main() -> Result<()>
     match &options.command {
         Command::Ping(ping_options) =>
             cmd::ping::execute_command(&options, &ping_options).await,
+        Command::Alert(alert_options) =>
+            cmd::alert::execute_command(&options, alert_options).await,
         Command::Run(run_options) =>
             cmd::run::execute_command(&options, &run_options).await,
     }
