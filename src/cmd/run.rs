@@ -473,19 +473,48 @@ async fn check_deadlines(app: &App) -> Result<()>
     Ok(())
 }
 
-async fn on_deadline_expired(app: &App, db: &ClientWrapper, pm: &mut PingMonitorExt, new_state: MonitorState, now: DateTime<Utc>) -> Result<()>
+async fn on_deadline_expired(app: &App, db: &ClientWrapper, pm: &mut PingMonitorExt, new_state: MonitorState, expired_at: DateTime<Utc>) -> Result<()>
 {
     if pm.stats.state == new_state {
-        bail!("state unchanged: pm={:?} new_state={:?} now={}", pm, new_state, now)
+        bail!("state unchanged: pm={:?} new_state={:?} now={}", pm, new_state, expired_at)
     }
 
-    db::ping::record_state_change(db.client(), pm.id, new_state, now).await?;
+    db::ping::record_state_change(db.client(), pm.id, new_state, expired_at).await?;
     pm.stats.state = new_state;
-    pm.stats.state_since = now;
+    pm.stats.state_since = expired_at;
 
-    // TODO: send alerts
-    // TODO: need to remember which alerts have been sent already.
-    //       we could store all failure events in the database, along with whether an alert has already been sent.
+    if new_state == MonitorState::Failed {
+        send_alert(app, db, pm, expired_at).await?;
+    }
+
+    Ok(())
+}
+
+async fn send_alert(app: &App, db: &ClientWrapper, pm: &PingMonitorExt, occurred_at: DateTime<Utc>) -> Result<()>
+{
+    // let subject =
+    //     format!("Failed: {}", pm.name);
+
+    let message =
+        match pm.stats.last_ping_at {
+            Some(last_ping_at) =>
+                format!("Ping monitor failed: {} (last ping was at {})", pm.name, last_ping_at),
+            None =>
+                format!("Ping monitor failed: {} (never pinged)", pm.name),
+        };
+
+    // TODO: try to send email, telegram message, ... according to configuration; if it succeeds set Some(Utc::now())
+    let _ = app;  // get alert target configuration
+    let delivered_at = None;
+    db::ping::record_alert(db.client(), &message, occurred_at, delivered_at).await?;
+
+    // TODO: if delivery fails (delivered_at = None), then we can try to re-send it later.
+
+    // TODO: daily email report/reminder at 5:00 a.m. (configurable) that lists all failed monitors
+    //       also list monitors that failed only briefly during the day (see state change history ... maybe just list out all state changes during the day (after the list of failed monitors))
+    //       don't send if nothing happened
+
+    // TODO: weekly report at Sunday 11:00 a.m. (configurable) that is always sent, even if everything is OK.
 
     Ok(())
 }
