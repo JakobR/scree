@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
+use postgres_types::{ToSql, FromSql};
 use tokio_postgres::{GenericClient, Row};
 use tracing::debug;
 
@@ -53,10 +54,30 @@ pub async fn get_all(conn: &super::Connection) -> Result<Vec<WithId<PingMonitor>
     Ok(pings)
 }
 
+#[derive(Debug, ToSql, FromSql)]
+#[postgres(name = "monitor_state", rename_all = "snake_case")]
+pub enum MonitorState {
+    Ok,
+    Warning,
+    Failed,
+}
+
+impl ToString for MonitorState {
+    fn to_string(&self) -> String {
+        match self {
+            MonitorState::Ok => "Ok".to_string(),
+            MonitorState::Warning => "Warning".to_string(),
+            MonitorState::Failed => "Failed".to_string(),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct Stats {
     pub num_pings: i64,
     pub last_ping_at: Option<DateTime<Utc>>,
+    pub state: MonitorState,
+    pub state_since: DateTime<Utc>,
 }
 
 impl TryFrom<&Row> for Stats {
@@ -66,7 +87,9 @@ impl TryFrom<&Row> for Stats {
     {
         let num_pings = row.try_get("num_pings")?;
         let last_ping_at = row.try_get("last_ping_at")?;
-        Ok(Stats { num_pings, last_ping_at })
+        let state = row.try_get("state")?;
+        let state_since = row.try_get("state_since")?;
+        Ok(Stats { num_pings, last_ping_at, state, state_since })
     }
 }
 
@@ -80,6 +103,12 @@ pub async fn get_all_with_stats(db: &impl GenericClient) -> Result<Vec<(WithId<P
                     ROW_NUMBER() OVER (PARTITION BY monitor_id ORDER BY occurred_at DESC) AS rnk,
                     COUNT(id) OVER (PARTITION BY monitor_id) AS count
                 FROM ping_events
+            ),
+            ranked_state_history AS (
+                SELECT
+                    id, monitor_id, state, state_since,
+                    ROW_NUMBER() OVER (PARTITION BY monitor_id ORDER BY state_since DESC) AS rnk
+                FROM ping_state_history
             )
         SELECT
             pm.id AS id,
@@ -89,9 +118,13 @@ pub async fn get_all_with_stats(db: &impl GenericClient) -> Result<Vec<(WithId<P
             pm.grace_s AS grace_s,
             pm.created_at AS created_at,
             COALESCE(re.count, 0) AS num_pings,
-            re.occurred_at AS last_ping_at
+            re.occurred_at AS last_ping_at,
+            -- if state/state_since are NULL, it means it is in state 'ok' since pm.created_at
+            COALESCE(rsh.state, 'ok') AS state,
+            COALESCE(rsh.state_since, pm.created_at) AS state_since
         FROM ping_monitors AS pm
         LEFT OUTER JOIN ranked_events AS re ON (pm.id = re.monitor_id AND re.rnk = 1)
+        LEFT OUTER JOIN ranked_state_history AS rsh ON (pm.id = rsh.monitor_id AND rsh.rnk = 1)
         ORDER BY name ASC
     ", &[]).await?;
     let pings = rows.iter()

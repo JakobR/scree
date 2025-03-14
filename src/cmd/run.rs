@@ -21,7 +21,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 use crate::cli::{Options, RunOptions};
-use crate::db::ping::{PingMonitor, Stats};
+use crate::db::ping::{MonitorState, PingMonitor, Stats};
 use crate::db::util::WithId;
 use crate::db::{self, Connection, Database};
 
@@ -184,12 +184,6 @@ impl MonitorStateInfo {
     }
 }
 
-#[derive(Debug)]
-pub enum MonitorState {
-    Ok,
-    Warning,
-    Failed,
-}
 
 pub async fn execute_command(options: &Options, run_options: &RunOptions) -> Result<()>
 {

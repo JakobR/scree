@@ -49,7 +49,7 @@ async fn list(options: &Options) -> Result<()>
     let mut table = Table::new();
     table.load_preset(comfy_table::presets::NOTHING);
 
-    table.set_header(["ID", "TOKEN", "NAME", "PERIOD", "GRACE", "CREATED", "PINGS", "LAST_PING"]);
+    table.set_header(["ID", "TOKEN", "NAME", "PERIOD", "GRACE", "CREATED", "PINGS", "LAST_PING", "STATE", "STATE_SINCE"]);
 
     let now = chrono::Utc::now();
 
@@ -70,6 +70,8 @@ async fn list(options: &Options) -> Result<()>
             Cell::new(pm.created_at.format("%F %T %:z")),
             Cell::new(stats.num_pings).set_alignment(CellAlignment::Right),
             Cell::new(last_ping_str),
+            Cell::new(stats.state),
+            Cell::new(stats.state_since.format("%F %T %:z")),
         ]);
     }
 

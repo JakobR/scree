@@ -306,9 +306,26 @@ impl Connection {
                 FOR EACH STATEMENT
                 EXECUTE FUNCTION notify_ping_monitors_change();
 
+            CREATE TYPE monitor_state AS ENUM ('ok', 'warning', 'failed');
+
+            CREATE TABLE ping_state_history
+            ( id SERIAL PRIMARY KEY
+            , monitor_id INTEGER NOT NULL REFERENCES ping_monitors(id)
+            , state monitor_state NOT NULL
+            , state_since TIMESTAMP WITH TIME ZONE NOT NULL
+            );
+
+            CREATE TABLE alert_history
+            ( id SERIAL PRIMARY KEY
+            , message TEXT NOT NULL
+            , channel TEXT NOT NULL
+            , created_at TIMESTAMP WITH TIME ZONE NOT NULL
+            , delivered_at TIMESTAMP WITH TIME ZONE
+            );
+
         "#).await?;
 
-        // TODO: ping_events: add index on for sorting on time stamps?
+        // TODO: ping_events, ping_state_history: add index on for sorting on time stamps?
         // TODO: ping_events: could log the source ip address as well
 
         t.commit().await?;
@@ -335,6 +352,12 @@ impl Connection {
 
 }
 
+
+/*
+
+when sending alerts, lock the row to make sure we send it only once: https://stackoverflow.com/a/52557413
+
+*/
 
 
 /*
