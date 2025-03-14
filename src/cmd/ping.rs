@@ -42,7 +42,7 @@ pub async fn create(options: &Options, create_options: &PingCreateOptions) -> Re
 async fn list(options: &Options) -> Result<()>
 {
     let conn = db::connect(&options.db).await?;
-    let pings = db::ping::get_all_with_stats(&conn).await?;
+    let pings = db::ping::get_all_with_stats(&conn.client).await?;
 
     use comfy_table::{Cell, CellAlignment, Table};
 
@@ -76,10 +76,10 @@ async fn list(options: &Options) -> Result<()>
     println!("{}", table);
 
     Ok(())
-
 }
 
-fn format_last_ping_delta(now: DateTime<Utc>, last_ping_at: DateTime<Utc>) -> String {
+fn format_last_ping_delta(now: DateTime<Utc>, last_ping_at: DateTime<Utc>) -> String
+{
     if now < last_ping_at {
         return "error: in the future".to_string();
     }

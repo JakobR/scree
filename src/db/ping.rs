@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
-use tokio_postgres::Row;
+use tokio_postgres::{GenericClient, Row};
 use tracing::debug;
 
 use super::util::WithId;
@@ -70,9 +70,9 @@ impl TryFrom<&Row> for Stats {
     }
 }
 
-pub async fn get_all_with_stats(conn: &super::Connection) -> Result<Vec<(WithId<PingMonitor>, Stats)>>
+pub async fn get_all_with_stats(db: &impl GenericClient) -> Result<Vec<(WithId<PingMonitor>, Stats)>>
 {
-    let rows = conn.client.query(/*sql*/ r"
+    let rows = db.query(/*sql*/ r"
         WITH
             ranked_events AS (
                 SELECT
