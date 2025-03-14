@@ -54,7 +54,7 @@ pub async fn get_all(conn: &super::Connection) -> Result<Vec<WithId<PingMonitor>
     Ok(pings)
 }
 
-#[derive(Debug, ToSql, FromSql)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ToSql, FromSql)]
 #[postgres(name = "monitor_state", rename_all = "snake_case")]
 pub enum MonitorState {
     Ok,
@@ -158,4 +158,13 @@ pub async fn insert(conn: &super::Connection, ping: &PingMonitor) -> Result<Id>
     debug!("new id: {id}");
 
     Ok(id)
+}
+
+pub async fn record_state_change(db: &impl GenericClient, pm_id: Id, state: MonitorState, state_since: DateTime<Utc>) -> Result<()>
+{
+    db.execute(/* sql */ r"
+        INSERT INTO ping_state_history (monitor_id, state, state_since) VALUES ($1, $2, $3)
+    ", &[&pm_id, &state, &state_since]).await?;
+
+    Ok(())
 }
