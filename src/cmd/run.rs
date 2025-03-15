@@ -142,13 +142,27 @@ impl PingMonitorExt {
         self.deadlines = Deadlines::compute(&self, self.stats.last_ping_at, now);
     }
 
-    /// get next relevant deadline
+    fn is_ok(&self) -> bool
+    {
+        self.stats.state == MonitorState::Ok
+    }
+
+    // ping is late but still within the grace period (the state is still "ok")
+    fn is_late(&self, now: DateTime<Utc>) -> bool
+    {
+        self.is_ok() && self.deadlines.warn_at <= now
+    }
+
+    fn is_failed(&self) -> bool
+    {
+        self.stats.state == MonitorState::Failed
+    }
+
+    // return next failure deadline
     fn deadline(&self) -> Option<DateTime<Utc>>
     {
         match self.stats.state {
             MonitorState::Ok =>
-                Some(self.deadlines.warn_at),
-            MonitorState::Warning =>
                 Some(self.deadlines.fail_at),
             MonitorState::Failed =>
                 // already failed, no deadline
@@ -454,39 +468,29 @@ async fn check_deadlines(app: &App) -> Result<()>
         }
 
         let result =
-            if pm.deadlines.fail_at <= now {
-                on_deadline_expired(db, pm, MonitorState::Failed, now).await
-            }
-            else if pm.deadlines.warn_at <= now {
-                on_deadline_expired(db, pm, MonitorState::Warning, now).await
-            }
-            else {
-                error!("unreachable (pm.id={}, warn_at={}, fail_at={}, now={})", pm.id, pm.deadlines.warn_at, pm.deadlines.fail_at, now);
-                continue;
-            }
+            on_deadline_expired(db, pm, now).await
             .with_context(|| format!("while processing expired deadline of monitor {}", pm.id));
 
         if let Err(e) = result {
-            error!("{:#}", e);
+            error!("while checking deadlines: {:#}", e);
         }
     }
 
     Ok(())
 }
 
-async fn on_deadline_expired(db: &mut ClientWrapper, pm: &mut PingMonitorExt, new_state: MonitorState, expired_at: DateTime<Utc>) -> Result<()>
+async fn on_deadline_expired(db: &mut ClientWrapper, pm: &mut PingMonitorExt, expired_at: DateTime<Utc>) -> Result<()>
 {
-    if pm.stats.state == new_state {
-        bail!("state unchanged: pm={:?} new_state={:?} now={}", pm, new_state, expired_at)
+    if pm.is_failed() {
+        bail!("state unchanged: pm={:?} expired_at={}", pm, expired_at)
     }
 
+    let new_state = MonitorState::Failed;
     db::ping::record_state_change(db.client(), pm.id, new_state, expired_at).await?;
     pm.stats.state = new_state;
     pm.stats.state_since = expired_at;
 
-    if new_state == MonitorState::Failed {
-        send_alert(db, pm, expired_at).await?;
-    }
+    send_alert(db, pm, expired_at).await?;
 
     Ok(())
 }

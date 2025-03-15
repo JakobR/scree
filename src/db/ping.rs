@@ -58,7 +58,12 @@ pub async fn get_all(conn: &super::Connection) -> Result<Vec<WithId<PingMonitor>
 #[postgres(name = "monitor_state", rename_all = "snake_case")]
 pub enum MonitorState {
     Ok,
-    Warning,
+    // NOTE: "Warning" is not a true state we should track, since it does not trigger any events.
+    //       Its purpose is simply to prevent spurious error alerts due to jitter in ping arrival times.
+    //       If we were to record "Warning" states, we would end up with a lot of noise when warning is entered for a few seconds at a time.
+    //       "Warning" should be treated as a sub-state of Ok that is merely distinguished visually in the dashboard.
+    //       Instead of "Warning", better call this state "Late"?
+    // Warning,
     Failed,
 }
 
@@ -66,7 +71,7 @@ impl ToString for MonitorState {
     fn to_string(&self) -> String {
         match self {
             MonitorState::Ok => "Ok".to_string(),
-            MonitorState::Warning => "Warning".to_string(),
+            // MonitorState::Warning => "Warning".to_string(),
             MonitorState::Failed => "Failed".to_string(),
         }
     }

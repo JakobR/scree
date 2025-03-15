@@ -336,7 +336,7 @@ impl Connection {
                 FOR EACH STATEMENT
                 EXECUTE FUNCTION notify_ping_monitors_change();
 
-            CREATE TYPE monitor_state AS ENUM ('ok', 'warning', 'failed');
+            CREATE TYPE monitor_state AS ENUM ('ok', 'failed');
 
             CREATE TABLE ping_state_history
             ( id SERIAL PRIMARY KEY
