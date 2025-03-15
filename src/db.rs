@@ -101,7 +101,8 @@ pub async fn set_property(db: &impl GenericClient, name: &str, value: Option<&st
     match value {
         Some(value) => {
             db.execute(/*sql*/ r"
-                INSERT OR REPLACE INTO scree_properties (name, value) VALUES ($1, $2)
+                INSERT INTO scree_properties (name, value) VALUES ($1, $2)
+                ON CONFLICT (name) DO UPDATE SET value = EXCLUDED.value
             ", &[&name, &value]).await?;
         }
         None => {
@@ -240,7 +241,8 @@ impl Connection {
             Some(value) => {
                 let stmt = self.set_property_stmt.get_or_try_init(|| {
                     self.client.prepare(/*sql*/ r"
-                        INSERT OR REPLACE INTO scree_properties (name, value) VALUES ($1, $2)
+                        INSERT INTO scree_properties (name, value) VALUES ($1, $2)
+                        ON CONFLICT (name) DO UPDATE SET value = EXCLUDED.value
                     ")
                 }).await?;
                 self.client.execute(stmt, &[&name, &value]).await?;
