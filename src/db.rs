@@ -317,6 +317,7 @@ impl Connection {
             , created_at TIMESTAMP WITH TIME ZONE NOT NULL
             );
 
+            -- TODO: merge ping_state_history into ping_events?
             CREATE TABLE ping_events
             ( id SERIAL PRIMARY KEY
             , monitor_id INTEGER NOT NULL REFERENCES ping_monitors(id)

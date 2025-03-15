@@ -173,3 +173,21 @@ pub async fn record_state_change(db: &impl GenericClient, pm_id: Id, state: Moni
 
     Ok(())
 }
+
+pub async fn record_ping(db: &impl GenericClient, pm_id: Id, occurred_at: DateTime<Utc>) -> Result<()>
+{
+    db.execute(/* sql */ r"
+        INSERT INTO ping_events (monitor_id, occurred_at) VALUES ($1, $2)
+    ", &[&pm_id, &occurred_at]).await?;
+
+    Ok(())
+}
+
+pub async fn find_by_token(db: &impl GenericClient, token: &str) -> Result<Option<Id>>
+{
+    let row_opt = db.query_opt(/* sql */ r"
+        SELECT id FROM ping_monitors WHERE token = $1
+    ", &[&token]).await?;
+    let id_opt = row_opt.map_or(Ok(None), |row| row.try_get(0))?;
+    Ok(id_opt)
+}

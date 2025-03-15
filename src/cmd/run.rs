@@ -4,13 +4,14 @@ use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::routing::get;
 use axum::Router;
 use chrono::{DateTime, Utc};
 use deadpool_postgres::{ClientWrapper, Pool};
+use thiserror::Error;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
@@ -135,6 +136,15 @@ impl PingMonitorExt {
             stats,
             deadlines,
         }
+    }
+
+    async fn update_state(&mut self, db: &ClientWrapper, new_state: MonitorState, state_since: DateTime<Utc>) -> Result<()>
+    {
+        db::ping::record_state_change(db.client(), self.id, new_state, state_since).await
+            .context("recording state change in database")?;
+        self.stats.state = new_state;
+        self.stats.state_since = state_since;
+        Ok(())
     }
 
     fn update_deadlines(&mut self, now: DateTime<Utc>)
@@ -466,33 +476,26 @@ async fn check_deadlines(app: &App) -> Result<()>
         if !pm.is_deadline_expired(now) {
             continue;
         }
-
-        let result =
-            on_deadline_expired(db, pm, now).await
-            .with_context(|| format!("while processing expired deadline of monitor {}", pm.id));
-
-        if let Err(e) = result {
-            error!("while checking deadlines: {:#}", e);
-        }
+        on_deadline_expired(db, pm, now).await;
     }
 
     Ok(())
 }
 
-async fn on_deadline_expired(db: &mut ClientWrapper, pm: &mut PingMonitorExt, expired_at: DateTime<Utc>) -> Result<()>
+async fn on_deadline_expired(db: &mut ClientWrapper, pm: &mut PingMonitorExt, expired_at: DateTime<Utc>)
 {
     if pm.is_failed() {
-        bail!("state unchanged: pm={:?} expired_at={}", pm, expired_at)
+        error!("state unchanged: pm={:?} expired_at={}", pm, expired_at);
+        return;
     }
 
-    let new_state = MonitorState::Failed;
-    db::ping::record_state_change(db.client(), pm.id, new_state, expired_at).await?;
-    pm.stats.state = new_state;
-    pm.stats.state_since = expired_at;
+    if let Err(e) = pm.update_state(db, MonitorState::Failed, expired_at).await {
+        error!("unable to update state of monitor {}: {:#}", pm.id, e);
+    }
 
-    send_alert(db, pm, expired_at).await?;
-
-    Ok(())
+    if let Err(e) = send_alert(db, pm, expired_at).await {
+        error!("unable to send alert for monitor {}: {:#}", pm.id, e);
+    }
 }
 
     // TODO: daily email report/reminder at 5:00 a.m. (configurable) that lists all failed monitors
@@ -509,7 +512,7 @@ async fn send_alert(db: &mut ClientWrapper, pm: &PingMonitorExt, occurred_at: Da
     let message =
         match pm.stats.last_ping_at {
             Some(last_ping_at) =>
-                format!("Ping monitor failed: {} (last ping was at {})", pm.name, last_ping_at),
+                format!("Ping monitor failed: {} (last ping was at {})", pm.name, last_ping_at.format("%F %T %:z")),
             None =>
                 format!("Ping monitor failed: {} (never pinged)", pm.name),
         };
@@ -548,9 +551,73 @@ async fn dashboard(app: State<App>) -> &'static str
     "Hello World!"
 }
 
-async fn ping(_app: State<App>, Path(token): Path<String>) -> Result<String, StatusCode>
+async fn ping(app: State<App>, Path(token): Path<String>) -> Result<String, StatusCode>
 {
     debug!(?token);
 
-    Ok(format!("pinged {}", &token))
+    match handle_ping(&app, &token).await {
+        Ok(()) => Ok("OK".to_string()),
+        Err(e) => {
+            if e.should_log() {
+                error!("ping error: {:#}", e);
+            }
+            Err(e.status_code())
+        }
+    }
+}
+
+
+#[derive(Debug, Error)]
+enum PingError {
+    #[error("no ping monitor exists for the given token")]
+    DoesNotExist,
+    #[error(transparent)]
+    Other(#[from] anyhow::Error),
+}
+
+impl PingError {
+    pub fn status_code(&self) -> StatusCode
+    {
+        match self {
+            Self::DoesNotExist => StatusCode::NOT_FOUND,
+            Self::Other(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        }
+    }
+
+    pub fn should_log(&self) -> bool
+    {
+        match self {
+            Self::DoesNotExist => false,
+            Self::Other(_) => true,
+        }
+    }
+}
+
+async fn handle_ping(app: &App, token: &str) -> Result<(), PingError>
+{
+    // retrieve timestamp at the start, before we do any waiting
+    let now = Utc::now();
+
+    let mut state_guard = app.state.lock().await;
+    let state = &mut *state_guard;
+
+    let mut db_guard = app.db_pool.get().await.context("retrieving db connection from pool")?;
+    let db = &mut *db_guard;
+
+    let id_opt = db::ping::find_by_token(db.client(), token).await?;
+    let Some(id) = id_opt else { return Err(PingError::DoesNotExist); };
+
+    let idx = state.ping_monitors.by_id.get(&id).cloned().context("retrieving monitor index for id")?;
+    let pm = &mut state.ping_monitors.all[idx];
+
+    // TODO: move this into PingMonitorExt?
+    //       it is hard to keep track of what needs to be changed to keep database and in-memory data in sync.
+    db::ping::record_ping(db.client(), pm.id, now).await?;
+    pm.update_state(db, MonitorState::Ok, now).await?;
+    pm.stats.num_pings += 1;
+    pm.stats.last_ping_at = Some(now);
+    pm.update_deadlines(now);
+    app.notify_deadlines_updated();
+
+    Ok(())
 }
