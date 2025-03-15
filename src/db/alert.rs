@@ -1,8 +1,9 @@
-use anyhow::Result;
+use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
+use serde::Deserialize;
 use thiserror::Error;
 use tokio_postgres::GenericClient;
-use tracing::error;
+use tracing::{debug, error};
 
 use crate::db;
 
@@ -100,7 +101,10 @@ pub async fn send(db: &mut impl GenericClient, alert: &Alert)
         let delivered =
             match result {
                 Ok(()) => true,
-                Err(SendError::NotConfigured) => continue,
+                Err(SendError::NotConfigured) => {
+                    debug!("channel '{}' is not configured, skipping", channel.as_str());
+                    continue;
+                }
                 Err(SendError::Other(e)) => {
                     error!("unable to send alert {:?}: {:#}", alert, e);
                     false
@@ -133,7 +137,34 @@ async fn send_telegram(db: &mut impl GenericClient, alert: &Alert) -> Result<(),
     let cfg = get_telegram_config(db).await?;
     let Some(cfg) = cfg else { return Err(SendError::NotConfigured); };
 
-    let _ = cfg;
-    let _ = alert;
-    todo!("send telegram");
+    let url = format!("https://api.telegram.org/bot{}/sendMessage", cfg.bot_token);
+
+    let text = format!("<b>{}</b>\n{}", alert.subject, alert.message);
+
+    let client = reqwest::Client::new();
+    let response_str = client.get(&url)
+        .query(&[
+            ("parse_mode", "HTML"),
+            ("chat_id", cfg.chat_id.as_str()),
+            ("text", text.as_str()),
+        ])
+        .send().await.context("Telegram GET sendMessage")?
+        .text().await.context("Telegram read response body")?;
+
+    debug!("Telegram response: {}", response_str);
+
+    #[derive(Debug, Deserialize)]
+    struct Response {
+        ok: bool,
+        description: Option<String>,
+    }
+
+    let r: Response = serde_json::from_str(&response_str).context("Telegram: unable to parse response JSON")?;
+
+    if !r.ok {
+        let description = r.description.unwrap_or_else(|| "<unkown error>".to_string());
+        return Err(anyhow!("Telegram: failed to send message: {}", description).into());
+    }
+
+    Ok(())
 }
