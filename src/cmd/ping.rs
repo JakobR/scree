@@ -19,11 +19,14 @@ pub async fn execute_command(options: &Options, ping_options: &PingOptions) -> R
 
 pub async fn create(options: &Options, create_options: &PingCreateOptions) -> Result<()>
 {
+    let period = create_options.period.into();
+    let grace = create_options.grace.map(Into::into).unwrap_or_else(|| period / 10);
+
     let ping = PingMonitor {
         token: Uuid::new_v4().to_string(),
         name: create_options.name.clone(),
-        period: create_options.period.into(),
-        grace: create_options.grace.map(Into::into).unwrap_or(Duration::ZERO),
+        period,
+        grace,
         created_at: Utc::now(),
     };
 
@@ -70,7 +73,7 @@ async fn list(options: &Options) -> Result<()>
             Cell::new(pm.created_at.format("%F %T %:z")),
             Cell::new(stats.num_pings).set_alignment(CellAlignment::Right),
             Cell::new(last_ping_str),
-            Cell::new(stats.state),
+            Cell::new(stats.state),  // TODO: show "Late" when in grace period
             Cell::new(stats.state_since.format("%F %T %:z")),
         ]);
     }

@@ -54,8 +54,10 @@ pub struct PingCreateOptions {
     /// Expected time between pings.
     pub period: Duration,
     /// Grace period: when a deadline is missed, the monitor will be considered
-    /// in a warning state for this amount of time, and will enter an error
+    /// in a "late" state for this amount of time, and will enter a failure
     /// state only after the grace period expires as well.
+    /// A grace period of 0 will lead to spurious failure alerts.
+    /// If no grace period is explicitly specified, it will be 10% of the given period.
     pub grace: Option<Duration>,
 }
 
