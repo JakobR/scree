@@ -23,7 +23,9 @@ use crate::cli::{Options, RunOptions};
 use crate::db::alert::Alert;
 use crate::db::ping::{PingMonitor, PingMonitorExt};
 use crate::db::{self, Connection, Database};
+use reload::{ReloadTask, ReloadToken};
 
+mod reload;
 mod report;
 
 #[derive(Debug, Clone)]
@@ -45,25 +47,25 @@ impl From<AppData> for App {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct AppData {
     db_pool: Pool,
     min_reload_interval: Duration,
     deadlines_updated_tx: UnboundedSender<()>,
-    reload_tx: UnboundedSender<ReloadRequest>,
+    reload: ReloadToken,
     shutdown_token: CancellationToken,
     started_at: DateTime<Utc>,
     state: Arc<Mutex<AppState>>,
 }
 
 impl AppData {
-    pub fn new(db_pool: Pool, deadlines_updated_tx: UnboundedSender<()>, reload_tx: UnboundedSender<ReloadRequest>, shutdown_token: CancellationToken) -> Self
+    pub fn new(db_pool: Pool, deadlines_updated_tx: UnboundedSender<()>, reload: ReloadToken, shutdown_token: CancellationToken) -> Self
     {
         Self {
             db_pool,
             min_reload_interval: Duration::from_secs(5),
             deadlines_updated_tx,
-            reload_tx,
+            reload,
             shutdown_token,
             started_at: Utc::now(),
             state: Arc::new(Mutex::new(AppState::new())),
@@ -78,21 +80,9 @@ impl AppData {
 
     pub fn reload_ping_monitors(&self)
     {
-        // ignore errors due to closed channel
-        let _ = self.reload_tx.send(ReloadRequest::new());
+        self.reload.reload_ping_monitors()
     }
 }
-
-struct ReloadRequest {
-    timestamp: Instant,
-}
-
-impl ReloadRequest {
-    fn new() -> Self {
-        ReloadRequest { timestamp: Instant::now() }
-    }
-}
-
 
 #[derive(Debug)]
 struct AppState {
@@ -146,15 +136,15 @@ pub async fn main(options: &Options, run_options: &RunOptions) -> Result<()>
     let pool = db.connect_pool().await?;
 
     let (deadlines_updated_tx, deadlines_updated_rx) = mpsc::unbounded_channel();
-    let (reload_tx, reload_rx) = mpsc::unbounded_channel();
+    let reload_task = ReloadTask::new();
 
-    let app: App = AppData::new(pool, deadlines_updated_tx, reload_tx.clone(), shutdown_token.clone()).into();
+    let app: App = AppData::new(pool, deadlines_updated_tx, reload_task.token(), shutdown_token.clone()).into();
 
     // lock the state mutex while sub-tasks are starting up (controlled startup while initial data is loaded)
     let mut state = app.state.lock().await;
 
     let nf_handle = setup_db_notifications(&mut conn, app.clone()).await?;
-    let reload_handle = tokio::spawn(process_reload_requests(reload_rx, reload_tx, app.clone()));
+    let reload_handle = reload_task.spawn(app.clone());
 
     let watch_handle = tokio::spawn(
         watch_deadlines(deadlines_updated_rx, app.clone())
@@ -165,7 +155,7 @@ pub async fn main(options: &Options, run_options: &RunOptions) -> Result<()>
     );
 
     // load initial data
-    reload_ping_monitors(&app, &mut *state).await?;
+    reload::reload_ping_monitors(&app, &mut *state).await?;
     // release state mutex to unblock sub-tasks
     drop(state);
 
@@ -224,71 +214,6 @@ async fn poll_db_notifications(app: App, mut rx: UnboundedReceiver<Notification>
     }
     // notifications channel has closed
     debug!("poll_db_notifications stopped");
-}
-
-async fn process_reload_requests(mut reload_rx: UnboundedReceiver<ReloadRequest>, reload_tx: UnboundedSender<ReloadRequest>, app: App)
-{
-    // On a db change notification (ping_monitors_changed):
-    // - reload monitors immediately, unless reload happened previously within the last 5 seconds (basic rate limit).
-    // - for now, just reload all the monitors instead of keeping track of fine-grained changes.
-    // - take care to update state atomically, or take some kind of lock, to make sure we do not lose any updates while reloading
-    //   (it is fine to miss updates for newly added items until the first reload happens)
-    loop {
-        let req = tokio::select! {
-            _ = app.shutdown_token.cancelled() => break,
-            Some(req) = reload_rx.recv() => req,
-            else => break,
-        };
-
-        let mut state_guard = app.state.lock().await;
-        let state = &mut *state_guard;
-
-        // drop outdated requests
-        // (this may happen if multiple requests arrive before a reload is completed)
-        if req.timestamp < state.last_reload {
-            continue;
-        }
-
-        let now = Instant::now();
-        let elapsed = now.duration_since(state.last_reload);
-
-        if elapsed >= app.min_reload_interval {
-            if let Err(e) = reload_ping_monitors(&app, state).await.context("reloading ping monitors") {
-                error!("error: {:#}", e);
-            }
-            state.last_reload = now;
-        }
-        else {
-            drop(state_guard);
-            let remaining_time = app.min_reload_interval - elapsed;
-            let reload_tx = reload_tx.clone();
-            // send the request again later
-            tokio::spawn(async move {
-                tokio::time::sleep(remaining_time).await;
-                let _ = reload_tx.send(req);
-            });
-        }
-    }
-    debug!("process_reload_requests stopped");
-}
-
-async fn reload_ping_monitors(app: &App, state: &mut AppState) -> Result<()>
-{
-    info!("(re-)loading ping monitors");
-    let now = Utc::now();
-    let db = app.db_pool.get().await?;
-
-    // We have the lock on the AppState at this point,
-    // so we don't have to worry about pings coming in while reloading.
-
-    let pms = PingMonitorExt::get_all(db.client(), now).await?;
-
-    state.ping_monitors = PingMonitors::new(pms);
-    info!("loaded {} ping monitors", state.ping_monitors.all.len());
-
-    app.notify_deadlines_updated();
-
-    Ok(())
 }
 
 async fn watch_deadlines(mut deadlines_updated_rx: UnboundedReceiver<()>, app: App)
