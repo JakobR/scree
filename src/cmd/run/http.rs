@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 
 use anyhow::{Context, Result};
-use axum::extract::{Path, State};
+use axum::extract::{ConnectInfo, Path, State};
 use axum::http::StatusCode;
 use axum::routing::get;
 use axum::Router;
@@ -19,7 +19,8 @@ pub async fn run_server(listen_addr: SocketAddr, app: App) -> Result<()>
     let router = Router::new()
         .route("/", get(http_dashboard))
         .route("/ping/{token}", get(http_ping))
-        .with_state(app.clone());
+        .with_state(app.clone())
+        .into_make_service_with_connect_info::<SocketAddr>();
 
     tracing::debug!("listening on {}", listen_addr);
     let listener = tokio::net::TcpListener::bind(listen_addr).await?;
@@ -41,11 +42,11 @@ async fn http_dashboard(app: State<App>) -> &'static str
     "Hello World!"
 }
 
-async fn http_ping(app: State<App>, Path(token): Path<String>) -> Result<String, StatusCode>
+async fn http_ping(app: State<App>, ConnectInfo(source_addr): ConnectInfo<SocketAddr>, Path(token): Path<String>) -> Result<String, StatusCode>
 {
     debug!(?token);
 
-    match handle_ping(&app, &token).await {
+    match handle_ping(&app, source_addr, &token).await {
         Ok(()) => Ok("OK".to_string()),
         Err(e) => {
             if e.should_log() {
@@ -82,7 +83,7 @@ impl PingError {
     }
 }
 
-async fn handle_ping(app: &App, token: &str) -> Result<(), PingError>
+async fn handle_ping(app: &App, source_addr: SocketAddr, token: &str) -> Result<(), PingError>
 {
     let mut state_guard = app.state.lock().await;
     let state = &mut *state_guard;
@@ -100,7 +101,7 @@ async fn handle_ping(app: &App, token: &str) -> Result<(), PingError>
     let idx = state.ping_monitors.by_id.get(&id).cloned().context("retrieving monitor index for id")?;
     let pm = &mut state.ping_monitors.all[idx];
 
-    pm.event_ping(db.client(), now).await?;
+    pm.event_ping(db.client(), now, source_addr).await?;
     app.notify_deadlines_updated();
 
     Ok(())

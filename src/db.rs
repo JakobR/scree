@@ -293,8 +293,8 @@ impl Connection {
             ( id SERIAL PRIMARY KEY
             , monitor_id INTEGER NOT NULL REFERENCES ping_monitors(id)
             , occurred_at TIMESTAMP WITH TIME ZONE NOT NULL
-            -- , source_addr INET
-            -- , source_port SMALLINT
+            , source_addr INET
+            , source_port INTEGER
             -- TODO: geo-ip information?
             );
 
