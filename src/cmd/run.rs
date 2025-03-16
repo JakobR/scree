@@ -1,24 +1,25 @@
 use std::collections::HashMap;
-use std::ops::{Deref, DerefMut};
+use std::ops::Deref;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use chrono::{DateTime, Utc};
-use deadpool_postgres::{ClientWrapper, Pool};
-use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
+use deadline_watcher::{DeadlineWatchTask, DeadlineWatchToken};
+use deadpool_postgres::Pool;
+use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
-use tokio_postgres::{GenericClient, Notification};
+use tokio_postgres::Notification;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 use crate::cli::{Options, RunOptions};
-use crate::db::alert::Alert;
 use crate::db::ping::PingMonitorExt;
-use crate::db::{self, Connection, Database};
+use crate::db::{Connection, Database};
 use reload::{ReloadTask, ReloadToken};
 
+mod deadline_watcher;
 mod http;
 mod reload;
 mod report;
@@ -46,7 +47,7 @@ impl From<AppData> for App {
 struct AppData {
     db_pool: Pool,
     min_reload_interval: Duration,
-    deadlines_updated_tx: UnboundedSender<()>,
+    deadline_watcher: DeadlineWatchToken,
     reload: ReloadToken,
     shutdown_token: CancellationToken,
     started_at: DateTime<Utc>,
@@ -54,12 +55,12 @@ struct AppData {
 }
 
 impl AppData {
-    pub fn new(db_pool: Pool, deadlines_updated_tx: UnboundedSender<()>, reload: ReloadToken, shutdown_token: CancellationToken) -> Self
+    pub fn new(db_pool: Pool, deadline_watcher: DeadlineWatchToken, reload: ReloadToken, shutdown_token: CancellationToken) -> Self
     {
         Self {
             db_pool,
             min_reload_interval: Duration::from_secs(5),
-            deadlines_updated_tx,
+            deadline_watcher,
             reload,
             shutdown_token,
             started_at: Utc::now(),
@@ -69,8 +70,7 @@ impl AppData {
 
     pub fn notify_deadlines_updated(&self)
     {
-        // ignore errors due to closed channel
-        let _ = self.deadlines_updated_tx.send(());
+        self.deadline_watcher.notify_deadlines_updated();
     }
 
     pub fn reload_ping_monitors(&self)
@@ -130,20 +130,17 @@ pub async fn main(options: &Options, run_options: &RunOptions) -> Result<()>
     // Connection pool is used for individual requests
     let pool = db.connect_pool().await?;
 
-    let (deadlines_updated_tx, deadlines_updated_rx) = mpsc::unbounded_channel();
+    let deadline_watcher = DeadlineWatchTask::new();
     let reload_task = ReloadTask::new();
 
-    let app: App = AppData::new(pool, deadlines_updated_tx, reload_task.token(), shutdown_token.clone()).into();
+    let app: App = AppData::new(pool, deadline_watcher.token(), reload_task.token(), shutdown_token.clone()).into();
 
     // lock the state mutex while sub-tasks are starting up (controlled startup while initial data is loaded)
     let mut state = app.state.lock().await;
 
     let nf_handle = setup_db_notifications(&mut conn, app.clone()).await?;
     let reload_handle = reload_task.spawn(app.clone());
-
-    let watch_handle = tokio::spawn(
-        watch_deadlines(deadlines_updated_rx, app.clone())
-    );
+    let watch_handle = deadline_watcher.spawn(app.clone());
 
     let http_handle = tokio::spawn(
         http::run_server(run_options.listen_addr, app.clone())
@@ -209,111 +206,4 @@ async fn poll_db_notifications(app: App, mut rx: UnboundedReceiver<Notification>
     }
     // notifications channel has closed
     debug!("poll_db_notifications stopped");
-}
-
-async fn watch_deadlines(mut deadlines_updated_rx: UnboundedReceiver<()>, app: App)
-{
-    loop {
-
-        while let Ok(()) = deadlines_updated_rx.try_recv() {
-            /* drain the update requests channel in case multiple requests have piled up (TODO: maybe a different channel type would fit better, e.g., BoundedChannel with bound 1; or even a Notify, but that seems more error-prone) */
-        }
-
-        let next_deadline = get_next_deadline(&app).await;
-        let now = Utc::now();
-        // if the deadline is already expired, wake up immediately
-        let delta = (next_deadline - now).to_std().unwrap_or(Duration::from_secs(0));
-
-        info!("Next deadline: {} (in {})", next_deadline, humantime::Duration::from(delta));
-
-        tokio::select! {
-            _ = app.shutdown_token.cancelled() => break,
-            Some(()) = deadlines_updated_rx.recv() => continue,
-            _ = tokio::time::sleep(delta) => (),
-            else => break,
-        };
-
-        info!("Estimated deadline expired, checking now");
-
-        if let Err(e) = check_deadlines(&app).await.context("checking deadlines") {
-            error!("{:#}", e);
-        }
-    }
-}
-
-async fn get_next_deadline(app: &App) -> DateTime<Utc>
-{
-    let mut state_guard = app.state.lock().await;
-    let state = &mut *state_guard;
-
-    // max deadline: in a day
-    let mut deadline = Utc::now() + chrono::TimeDelta::days(1);
-
-    for pm in &state.ping_monitors.all {
-        let Some(pm_deadline) = pm.deadline() else { continue };
-
-        if pm_deadline < deadline {
-            deadline = pm_deadline;
-        }
-    }
-
-    deadline
-}
-
-// check monitors for state changes and send out alerts
-async fn check_deadlines(app: &App) -> Result<()>
-{
-    let mut state_guard = app.state.lock().await;
-    let state = &mut *state_guard;
-
-    let mut db_guard = app.db_pool.get().await?;
-    let db = &mut *db_guard;
-
-    info!("checking deadlines");
-
-    let now = Utc::now();
-
-    for pm in &mut state.ping_monitors.all {
-        if !pm.is_deadline_expired(now) {
-            continue;
-        }
-        on_deadline_expired(db, pm, now).await;
-    }
-
-    Ok(())
-}
-
-async fn on_deadline_expired(db: &mut ClientWrapper, pm: &mut PingMonitorExt, expired_at: DateTime<Utc>)
-{
-    if pm.is_failed() {
-        error!("state unchanged: pm={:?} expired_at={}", pm, expired_at);
-        return;
-    }
-
-    if let Err(e) = pm.event_deadline_expired(db.client(), expired_at).await {
-        error!("unable to update state of monitor {}: {:#}", pm.id, e);
-    }
-
-    if let Err(e) = send_failure_alert(db, pm, expired_at).await {
-        error!("unable to send alert for monitor {}: {:#}", pm.id, e);
-    }
-}
-
-async fn send_failure_alert(db: &mut ClientWrapper, pm: &PingMonitorExt, occurred_at: DateTime<Utc>) -> Result<()>
-{
-    let subject =
-        format!("Failed: {}", pm.name);
-
-    let message =
-        match pm.stats().last_ping_at {
-            Some(last_ping_at) =>
-                format!("Ping monitor failed: {} (last ping was at {})", pm.name, last_ping_at.format("%F %T %:z")),
-            None =>
-                format!("Ping monitor failed: {} (never pinged)", pm.name),
-        };
-
-    let alert = Alert { subject, message, created_at: occurred_at };
-    db::alert::send(db.deref_mut(), &alert).await;
-
-    Ok(())
 }
