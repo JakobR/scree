@@ -63,9 +63,8 @@ async fn watch_deadlines(mut deadlines_updated_rx: UnboundedReceiver<()>, app: A
         }
 
         let next_deadline = get_next_deadline(&app).await;
-        let now = Utc::now();
         // if the deadline is already expired, wake up immediately
-        let delta = (next_deadline - now).to_std().unwrap_or(Duration::from_secs(0));
+        let delta = (next_deadline - Utc::now()).to_std().unwrap_or(Duration::from_secs(0));
 
         info!("Next deadline: {} (in {})", next_deadline, humantime::Duration::from(delta));
 

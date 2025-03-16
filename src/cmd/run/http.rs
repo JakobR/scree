@@ -84,11 +84,12 @@ impl PingError {
 
 async fn handle_ping(app: &App, token: &str) -> Result<(), PingError>
 {
-    // retrieve timestamp at the start, before we do any waiting
-    let now = Utc::now();
-
     let mut state_guard = app.state.lock().await;
     let state = &mut *state_guard;
+
+    // timestamp is retrieved after we have the state lock;
+    // otherwise interleaving could be such that a failure is recorded with a later timestamp while we are waiting on the state mutex
+    let now = Utc::now();
 
     let mut db_guard = app.db_pool.get().await.context("retrieving db connection from pool")?;
     let db = &mut *db_guard;
