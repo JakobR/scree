@@ -289,12 +289,28 @@ impl Connection {
             , created_at TIMESTAMP WITH TIME ZONE NOT NULL
             );
 
-            -- TODO: merge ping_state_history into ping_events?
-            CREATE TABLE ping_events
+            CREATE TABLE pings
             ( id SERIAL PRIMARY KEY
             , monitor_id INTEGER NOT NULL REFERENCES ping_monitors(id)
             , occurred_at TIMESTAMP WITH TIME ZONE NOT NULL
+            -- , source_addr INET
+            -- , source_port SMALLINT
+            -- TODO: geo-ip information?
             );
+
+            CREATE UNIQUE INDEX pings_by_monitor ON pings (monitor_id, occurred_at DESC);
+
+            CREATE TYPE monitor_state AS ENUM ('ok', 'failed');
+
+            CREATE TABLE ping_state_history
+            ( id SERIAL PRIMARY KEY
+            , monitor_id INTEGER NOT NULL REFERENCES ping_monitors(id)
+            , state monitor_state NOT NULL
+            , state_since TIMESTAMP WITH TIME ZONE NOT NULL
+            );
+
+            -- NOTE: because of UNIQUE, we may only have one state per instant per monitor which ensures deterministic ordering by time
+            CREATE UNIQUE INDEX ping_state_history_by_monitor ON ping_state_history (monitor_id, state_since DESC);
 
             CREATE FUNCTION notify_ping_monitors_change() RETURNS TRIGGER AS $$
                 BEGIN
@@ -309,15 +325,6 @@ impl Connection {
                 FOR EACH STATEMENT
                 EXECUTE FUNCTION notify_ping_monitors_change();
 
-            CREATE TYPE monitor_state AS ENUM ('ok', 'failed');
-
-            CREATE TABLE ping_state_history
-            ( id SERIAL PRIMARY KEY
-            , monitor_id INTEGER NOT NULL REFERENCES ping_monitors(id)
-            , state monitor_state NOT NULL
-            , state_since TIMESTAMP WITH TIME ZONE NOT NULL
-            );
-
             CREATE TABLE alert_history
             ( id SERIAL PRIMARY KEY
             , subject TEXT NOT NULL
@@ -328,9 +335,6 @@ impl Connection {
             );
 
         "#).await?;
-
-        // TODO: ping_events, ping_state_history: add index on for sorting on time stamps?
-        // TODO: ping_events: could log the source ip address as well
 
         t.commit().await?;
         Ok(())

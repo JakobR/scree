@@ -103,18 +103,9 @@ impl ToString for MonitorState {
     fn to_string(&self) -> String {
         match self {
             MonitorState::Ok => "Ok".to_string(),
-            // MonitorState::Warning => "Warning".to_string(),
             MonitorState::Failed => "Failed".to_string(),
         }
     }
-}
-
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ToSql, FromSql)]
-#[postgres(name = "ping_monitor_event", rename_all = "snake_case")]
-pub enum PingMonitorEvent {
-    Ping,
-    DeadlineExpired,
 }
 
 
@@ -158,39 +149,61 @@ impl PingMonitorExt {
         }
     }
 
-    async fn update_state(&mut self, db: &impl GenericClient, new_state: MonitorState, state_since: DateTime<Utc>) -> Result<()>
-    {
-        record_state_change(db, self.id, new_state, state_since).await
-            .context("recording state change in database")?;
-        self.stats.state = new_state;
-        self.stats.state_since = state_since;
-        Ok(())
-    }
-
     fn update_deadlines(&mut self, now: DateTime<Utc>)
     {
         self.deadlines = Deadlines::compute(&self, self.stats.last_ping_at, now);
     }
 
+    async fn record_state(&mut self, db: &impl GenericClient, new_state: MonitorState, new_state_since: DateTime<Utc>) -> Result<()>
+    {
+        if self.state() == new_state {
+            return Ok(());
+        }
+
+        db.execute(/* sql */ r"
+            INSERT INTO ping_state_history (monitor_id, state, state_since) VALUES ($1, $2, $3)
+        ", &[&self.id, &new_state, &new_state_since]).await?;
+
+        self.stats.state = new_state;
+        self.stats.state_since = new_state_since;
+
+        Ok(())
+    }
+
+    async fn record_ping(&mut self, db: &impl GenericClient, occurred_at: DateTime<Utc>) -> Result<()>
+    {
+        db.execute(/* sql */ r"
+            INSERT INTO pings (monitor_id, occurred_at) VALUES ($1, $2)
+        ", &[&self.id, &occurred_at]).await?;
+
+        self.stats.num_pings += 1;
+        self.stats.last_ping_at = Some(occurred_at);
+        self.update_deadlines(occurred_at);
+
+        Ok(())
+    }
+
     pub async fn event_ping(&mut self, db: &impl GenericClient, now: DateTime<Utc>) -> Result<()>
     {
-        record_ping(db, self.id, now).await?;
-        self.update_state(db, MonitorState::Ok, now).await?;
-        self.stats.num_pings += 1;
-        self.stats.last_ping_at = Some(now);
-        self.update_deadlines(now);
+        self.record_ping(db, now).await?;
+        self.record_state(db, MonitorState::Ok, now).await?;
         Ok(())
     }
 
     pub async fn event_deadline_expired(&mut self, db: &impl GenericClient, expired_at: DateTime<Utc>) -> Result<()>
     {
-        self.update_state(db, MonitorState::Failed, expired_at).await?;
+        self.record_state(db, MonitorState::Failed, expired_at).await?;
         Ok(())
+    }
+
+    pub fn state(&self) -> MonitorState
+    {
+        self.stats.state
     }
 
     pub fn is_ok(&self) -> bool
     {
-        self.stats.state == MonitorState::Ok
+        self.state() == MonitorState::Ok
     }
 
     // true if ping is late but still within the grace period (the state is still "ok")
@@ -201,7 +214,7 @@ impl PingMonitorExt {
 
     pub fn is_failed(&self) -> bool
     {
-        self.stats.state == MonitorState::Failed
+        self.state() == MonitorState::Failed
     }
 
     pub fn stats(&self) -> &Stats
@@ -212,7 +225,7 @@ impl PingMonitorExt {
     // next failure deadline
     pub fn deadline(&self) -> Option<DateTime<Utc>>
     {
-        match self.stats.state {
+        match self.state() {
             MonitorState::Ok =>
                 Some(self.deadlines.fail_at),
             MonitorState::Failed =>
@@ -233,14 +246,14 @@ impl PingMonitorExt {
     {
         let rows = db.query(/*sql*/ r"
             WITH
-                ranked_events AS (
+                ranked_pings AS (
                     SELECT
                         id, monitor_id, occurred_at,
                         ROW_NUMBER() OVER (PARTITION BY monitor_id ORDER BY occurred_at DESC) AS rnk,
                         COUNT(id) OVER (PARTITION BY monitor_id) AS count
-                    FROM ping_events
+                    FROM pings
                 ),
-                ranked_state_history AS (
+                ranked_state AS (
                     SELECT
                         id, monitor_id, state, state_since,
                         ROW_NUMBER() OVER (PARTITION BY monitor_id ORDER BY state_since DESC) AS rnk
@@ -253,14 +266,14 @@ impl PingMonitorExt {
                 pm.period_s AS period_s,
                 pm.grace_s AS grace_s,
                 pm.created_at AS created_at,
-                COALESCE(re.count, 0) AS num_pings,
-                re.occurred_at AS last_ping_at,
+                COALESCE(rp.count, 0) AS num_pings,
+                rp.occurred_at AS last_ping_at,
                 -- if state/state_since are NULL, it means it is in state 'ok' since pm.created_at
-                COALESCE(rsh.state, 'ok') AS state,
-                COALESCE(rsh.state_since, pm.created_at) AS state_since
+                COALESCE(rs.state, 'ok') AS state,
+                COALESCE(rs.state_since, pm.created_at) AS state_since
             FROM ping_monitors AS pm
-            LEFT OUTER JOIN ranked_events AS re ON (pm.id = re.monitor_id AND re.rnk = 1)
-            LEFT OUTER JOIN ranked_state_history AS rsh ON (pm.id = rsh.monitor_id AND rsh.rnk = 1)
+            LEFT OUTER JOIN ranked_pings AS rp ON (pm.id = rp.monitor_id AND rp.rnk = 1)
+            LEFT OUTER JOIN ranked_state AS rs ON (pm.id = rs.monitor_id AND rs.rnk = 1)
             ORDER BY name ASC
         ", &[]).await?;
         let pings = rows.iter()
@@ -306,23 +319,4 @@ impl Deadlines {
 
         Self { warn_at, fail_at }
     }
-}
-
-
-async fn record_state_change(db: &impl GenericClient, pm_id: Id, state: MonitorState, state_since: DateTime<Utc>) -> Result<()>
-{
-    db.execute(/* sql */ r"
-        INSERT INTO ping_state_history (monitor_id, state, state_since) VALUES ($1, $2, $3)
-    ", &[&pm_id, &state, &state_since]).await?;
-
-    Ok(())
-}
-
-async fn record_ping(db: &impl GenericClient, pm_id: Id, occurred_at: DateTime<Utc>) -> Result<()>
-{
-    db.execute(/* sql */ r"
-        INSERT INTO ping_events (monitor_id, occurred_at) VALUES ($1, $2)
-    ", &[&pm_id, &occurred_at]).await?;
-
-    Ok(())
 }
