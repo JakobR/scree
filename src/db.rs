@@ -127,8 +127,6 @@ pub struct Connection {
     pub client: Client,
 
     get_property_stmt: OnceCell<Statement>,
-    set_property_stmt: OnceCell<Statement>,
-    delete_property_stmt: OnceCell<Statement>,
 
     connection_handle: JoinHandle<()>,
     connection_token: CancellationToken,
@@ -202,8 +200,6 @@ impl Connection {
         Ok(Self {
             client,
             get_property_stmt: OnceCell::new(),
-            set_property_stmt: OnceCell::new(),
-            delete_property_stmt: OnceCell::new(),
             connection_handle,
             connection_token,
             notification_rx: Some(notification_rx),
@@ -233,30 +229,6 @@ impl Connection {
         let row_opt = self.client.query_opt(stmt, &[&name]).await?;
         let value_opt = row_opt.map(|row| row.try_get(0)).transpose()?;
         Ok(value_opt)
-    }
-
-    pub async fn set_property(&self, name: &str, value: Option<&str>) -> Result<()>
-    {
-        match value {
-            Some(value) => {
-                let stmt = self.set_property_stmt.get_or_try_init(|| {
-                    self.client.prepare(/*sql*/ r"
-                        INSERT INTO scree_properties (name, value) VALUES ($1, $2)
-                        ON CONFLICT (name) DO UPDATE SET value = EXCLUDED.value
-                    ")
-                }).await?;
-                self.client.execute(stmt, &[&name, &value]).await?;
-            }
-            None => {
-                let stmt = self.delete_property_stmt.get_or_try_init(|| {
-                    self.client.prepare(/*sql*/ r"
-                        DELETE FROM scree_properties WHERE name = $1
-                    ")
-                }).await?;
-                self.client.execute(stmt, &[&name]).await?;
-            }
-        }
-        Ok(())
     }
 
     async fn get_schema_version(&self) -> Result<Option<u32>>
