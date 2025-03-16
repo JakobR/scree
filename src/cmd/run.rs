@@ -49,18 +49,20 @@ struct AppData {
     db_pool: Pool,
     min_reload_interval: Duration,
     deadlines_updated_tx: UnboundedSender<()>,
+    reload_tx: UnboundedSender<ReloadRequest>,
     shutdown_token: CancellationToken,
     started_at: DateTime<Utc>,
     state: Arc<Mutex<AppState>>,
 }
 
 impl AppData {
-    pub fn new(db_pool: Pool, deadlines_updated_tx: UnboundedSender<()>, shutdown_token: CancellationToken) -> Self
+    pub fn new(db_pool: Pool, deadlines_updated_tx: UnboundedSender<()>, reload_tx: UnboundedSender<ReloadRequest>, shutdown_token: CancellationToken) -> Self
     {
         Self {
             db_pool,
             min_reload_interval: Duration::from_secs(5),
             deadlines_updated_tx,
+            reload_tx,
             shutdown_token,
             started_at: Utc::now(),
             state: Arc::new(Mutex::new(AppState::new())),
@@ -72,7 +74,24 @@ impl AppData {
         // ignore errors due to closed channel
         let _ = self.deadlines_updated_tx.send(());
     }
+
+    pub fn reload_ping_monitors(&self)
+    {
+        // ignore errors due to closed channel
+        let _ = self.reload_tx.send(ReloadRequest::new());
+    }
 }
+
+struct ReloadRequest {
+    timestamp: Instant,
+}
+
+impl ReloadRequest {
+    fn new() -> Self {
+        ReloadRequest { timestamp: Instant::now() }
+    }
+}
+
 
 #[derive(Debug)]
 struct AppState {
@@ -244,13 +263,15 @@ pub async fn execute_command(options: &Options, run_options: &RunOptions) -> Res
     let pool = db.connect_pool().await?;
 
     let (deadlines_updated_tx, deadlines_updated_rx) = mpsc::unbounded_channel();
+    let (reload_tx, reload_rx) = mpsc::unbounded_channel();
 
-    let app: App = AppData::new(pool, deadlines_updated_tx, shutdown_token.clone()).into();
+    let app: App = AppData::new(pool, deadlines_updated_tx, reload_tx.clone(), shutdown_token.clone()).into();
 
     // lock the state mutex while sub-tasks are starting up (controlled startup while initial data is loaded)
     let mut state = app.state.lock().await;
 
     let nf_handle = setup_db_notifications(&mut conn, app.clone()).await?;
+    let reload_handle = tokio::spawn(process_reload_requests(reload_rx, reload_tx, app.clone()));
 
     let watch_handle = tokio::spawn(
         watch_deadlines(deadlines_updated_rx, app.clone())
@@ -273,6 +294,7 @@ pub async fn execute_command(options: &Options, run_options: &RunOptions) -> Res
     // collect sub-tasks
     server_handle.await??;
     watch_handle.await?;
+    reload_handle.await?;
     conn.close().await?;
     nf_handle.await?;  // stops after conn.close()
 
@@ -299,12 +321,8 @@ fn setup_panic_hook(shutdown_token: CancellationToken)
 
 async fn setup_db_notifications(conn: &mut Connection, app: App) -> Result<JoinHandle<()>>
 {
-    let (reload_tx, reload_rx) = mpsc::unbounded_channel();
-
-    let _reload_handle = tokio::spawn(process_reload_requests(reload_rx, reload_tx.clone(), app));
-
     let rx = conn.take_notification_rx().expect("notification receiver is available");
-    let handle = tokio::spawn(poll_db_notifications(rx, reload_tx));
+    let handle = tokio::spawn(poll_db_notifications(app, rx));
 
     conn.client.batch_execute(/*sql*/ r"
         LISTEN ping_monitors_changed;
@@ -313,30 +331,16 @@ async fn setup_db_notifications(conn: &mut Connection, app: App) -> Result<JoinH
     Ok(handle)
 }
 
-async fn poll_db_notifications(mut rx: UnboundedReceiver<Notification>, reload_tx: UnboundedSender<ReloadRequest>)
+async fn poll_db_notifications(app: App, mut rx: UnboundedReceiver<Notification>)
 {
     while let Some(nf) = rx.recv().await {
         match nf.channel() {
-            "ping_monitors_changed" => {
-                // we do not care whether the channel is closed
-                let _ = reload_tx.send(ReloadRequest::new());
-            }
-            //on_ping_monitors_changed(&app).await,
-            _channel => warn!("unhandled notification: {:?}", nf),
+            "ping_monitors_changed" => app.reload_ping_monitors(),
+            _ => warn!("unhandled notification: {:?}", nf),
         }
     }
     // notifications channel has closed
     debug!("poll_db_notifications stopped");
-}
-
-struct ReloadRequest {
-    timestamp: Instant,
-}
-
-impl ReloadRequest {
-    fn new() -> Self {
-        ReloadRequest { timestamp: Instant::now() }
-    }
 }
 
 async fn process_reload_requests(mut reload_rx: UnboundedReceiver<ReloadRequest>, reload_tx: UnboundedSender<ReloadRequest>, app: App)
