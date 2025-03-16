@@ -5,7 +5,7 @@ use postgres_types::FromSqlOwned;
 use tokio_postgres::Row;
 
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct WithId<T, Id = i32> {
     pub inner: T,
     pub id: Id,

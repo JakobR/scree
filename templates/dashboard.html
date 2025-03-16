@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <meta charset="utf-8" />
+        <title>Dashboard | Scree</title>
+    </head>
+    <body>
+        <h1>Dashboard</h1>
+        {{ blah }}
+        <table>
+            <caption>
+                Active Ping Monitors
+            </caption>
+            <thead>
+                <tr>
+                    <th>Id</th>
+                    <th>Name</th>
+                    <th>State</th>
+                    <th>Since</th>
+                    <th>Pings</th>
+                    <th>Last Ping</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for pm in pms %}
+                <tr>
+                    <td>{{ pm.id }}</td>
+                    <td>{{ pm.name }}</td>
+                    {% if pm.is_late(now.clone()) %}
+                    <td>Late</td>
+                    {% else if pm.is_ok() %}
+                    <td>Ok</td>
+                    {% else if pm.is_failed() %}
+                    <td>Failed</td>
+                    {% else %}
+                    <td>???</td>
+                    {% endif %}
+                    <td>{{ pm.stats().state_since }}</td>
+                    <td>{{ pm.stats().num_pings }}</td>
+                    <td>
+                        {% match pm.stats().last_ping_at %}
+                            {% when Some with (last_ping_at) %}
+                                {{ last_ping_at }}
+                            {% when None %}
+                        {% endmatch %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        <footer>
+            Running since {{ started_at }}.
+        </footer>
+    </body>
+</html>

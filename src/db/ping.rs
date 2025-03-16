@@ -12,7 +12,7 @@ use super::util::WithId;
 
 type Id = i32;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PingMonitor {
     /// Token used in ping URL, unique identifier.
     pub token: String,
@@ -110,7 +110,7 @@ impl ToString for MonitorState {
 }
 
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Stats {
     pub num_pings: i64,
     pub last_ping_at: Option<DateTime<Utc>>,
@@ -132,7 +132,7 @@ impl TryFrom<&Row> for Stats {
 }
 
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PingMonitorExt {
     inner: WithId<PingMonitor>,
     stats: Stats,
@@ -298,7 +298,7 @@ impl Deref for PingMonitorExt {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Deadlines {
     warn_at: DateTime<Utc>,
     fail_at: DateTime<Utc>,

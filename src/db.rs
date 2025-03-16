@@ -295,7 +295,7 @@ impl Connection {
             , occurred_at TIMESTAMP WITH TIME ZONE NOT NULL
             , source_addr INET
             , source_port INTEGER
-            -- TODO: geo-ip information?
+            -- TODO: geo-ip information? e.g., using https://crates.io/crates/maxminddb
             );
 
             CREATE UNIQUE INDEX pings_by_monitor ON pings (monitor_id, occurred_at DESC);
