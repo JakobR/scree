@@ -1,17 +1,11 @@
 use std::collections::HashMap;
-use std::net::SocketAddr;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use axum::extract::{Path, State};
-use axum::http::StatusCode;
-use axum::routing::get;
-use axum::Router;
 use chrono::{DateTime, Utc};
 use deadpool_postgres::{ClientWrapper, Pool};
-use thiserror::Error;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
@@ -21,10 +15,11 @@ use tracing::{debug, error, info, warn};
 
 use crate::cli::{Options, RunOptions};
 use crate::db::alert::Alert;
-use crate::db::ping::{PingMonitor, PingMonitorExt};
+use crate::db::ping::PingMonitorExt;
 use crate::db::{self, Connection, Database};
 use reload::{ReloadTask, ReloadToken};
 
+mod http;
 mod reload;
 mod report;
 
@@ -150,8 +145,8 @@ pub async fn main(options: &Options, run_options: &RunOptions) -> Result<()>
         watch_deadlines(deadlines_updated_rx, app.clone())
     );
 
-    let server_handle = tokio::spawn(
-        run_server(run_options.listen_addr, app.clone())
+    let http_handle = tokio::spawn(
+        http::run_server(run_options.listen_addr, app.clone())
     );
 
     // load initial data
@@ -165,7 +160,7 @@ pub async fn main(options: &Options, run_options: &RunOptions) -> Result<()>
     shutdown_token.cancelled().await;
 
     // collect sub-tasks
-    server_handle.await??;
+    http_handle.await??;
     watch_handle.await?;
     reload_handle.await?;
     conn.close().await?;
@@ -299,12 +294,12 @@ async fn on_deadline_expired(db: &mut ClientWrapper, pm: &mut PingMonitorExt, ex
         error!("unable to update state of monitor {}: {:#}", pm.id, e);
     }
 
-    if let Err(e) = send_alert(db, pm, expired_at).await {
+    if let Err(e) = send_failure_alert(db, pm, expired_at).await {
         error!("unable to send alert for monitor {}: {:#}", pm.id, e);
     }
 }
 
-async fn send_alert(db: &mut ClientWrapper, pm: &PingMonitorExt, occurred_at: DateTime<Utc>) -> Result<()>
+async fn send_failure_alert(db: &mut ClientWrapper, pm: &PingMonitorExt, occurred_at: DateTime<Utc>) -> Result<()>
 {
     let subject =
         format!("Failed: {}", pm.name);
@@ -319,99 +314,6 @@ async fn send_alert(db: &mut ClientWrapper, pm: &PingMonitorExt, occurred_at: Da
 
     let alert = Alert { subject, message, created_at: occurred_at };
     db::alert::send(db.deref_mut(), &alert).await;
-
-    Ok(())
-}
-
-
-async fn run_server(listen_addr: SocketAddr, app: App) -> Result<()>
-{
-    let router = Router::new()
-        .route("/", get(http_dashboard))
-        .route("/ping/{token}", get(http_ping))
-        .with_state(app.clone());
-
-    tracing::debug!("listening on {}", listen_addr);
-    let listener = tokio::net::TcpListener::bind(listen_addr).await?;
-    axum::serve(listener, router)
-        .with_graceful_shutdown(app.shutdown_token.clone().cancelled_owned())
-        .await?;
-
-    Ok(())
-}
-
-async fn http_dashboard(app: State<App>) -> &'static str
-{
-    // TODO:
-    // dashboard should clone the data behind the mutex and then release it
-    // then also check with database if there are any new monitors that are missing from the local cache
-    // (we'd want to know, and display a warning on such "inactive" monitors.)
-    // TODO: also display the stats (like 'ping list' command). could even display the list of previous pings if you click on one.
-    let _ = app.started_at;  // display this in the footer
-    "Hello World!"
-}
-
-async fn http_ping(app: State<App>, Path(token): Path<String>) -> Result<String, StatusCode>
-{
-    debug!(?token);
-
-    match handle_ping(&app, &token).await {
-        Ok(()) => Ok("OK".to_string()),
-        Err(e) => {
-            if e.should_log() {
-                error!("ping error: {:#}", e);
-            }
-            Err(e.status_code())
-        }
-    }
-}
-
-
-#[derive(Debug, Error)]
-enum PingError {
-    #[error("no ping monitor exists for the given token")]
-    DoesNotExist,
-    #[error(transparent)]
-    Other(#[from] anyhow::Error),
-}
-
-impl PingError {
-    pub fn status_code(&self) -> StatusCode
-    {
-        match self {
-            Self::DoesNotExist => StatusCode::NOT_FOUND,
-            Self::Other(_) => StatusCode::INTERNAL_SERVER_ERROR,
-        }
-    }
-
-    pub fn should_log(&self) -> bool
-    {
-        match self {
-            Self::DoesNotExist => false,
-            Self::Other(_) => true,
-        }
-    }
-}
-
-async fn handle_ping(app: &App, token: &str) -> Result<(), PingError>
-{
-    // retrieve timestamp at the start, before we do any waiting
-    let now = Utc::now();
-
-    let mut state_guard = app.state.lock().await;
-    let state = &mut *state_guard;
-
-    let mut db_guard = app.db_pool.get().await.context("retrieving db connection from pool")?;
-    let db = &mut *db_guard;
-
-    let id_opt = PingMonitor::find_by_token(db.client(), token).await?;
-    let Some(id) = id_opt else { return Err(PingError::DoesNotExist); };
-
-    let idx = state.ping_monitors.by_id.get(&id).cloned().context("retrieving monitor index for id")?;
-    let pm = &mut state.ping_monitors.all[idx];
-
-    pm.event_ping(db.client(), now).await?;
-    app.notify_deadlines_updated();
 
     Ok(())
 }
