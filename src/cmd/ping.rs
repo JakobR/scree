@@ -6,9 +6,9 @@ use uuid::Uuid;
 
 use crate::cli::{Options, PingCommand, PingCreateOptions, PingOptions};
 use crate::db;
-use crate::db::ping::PingMonitor;
+use crate::db::ping::{PingMonitor, PingMonitorExt};
 
-pub async fn execute_command(options: &Options, ping_options: &PingOptions) -> Result<()>
+pub async fn main(options: &Options, ping_options: &PingOptions) -> Result<()>
 {
     match &ping_options.command {
         PingCommand::Create(create_options) => create(options, create_options).await?,
@@ -22,7 +22,7 @@ pub async fn create(options: &Options, create_options: &PingCreateOptions) -> Re
     let period = create_options.period.into();
     let grace = create_options.grace.map(Into::into).unwrap_or_else(|| period / 10);
 
-    let ping = PingMonitor {
+    let pm = PingMonitor {
         token: Uuid::new_v4().to_string(),
         name: create_options.name.clone(),
         period,
@@ -31,21 +31,24 @@ pub async fn create(options: &Options, create_options: &PingCreateOptions) -> Re
     };
 
     let conn = db::connect(&options.db).await?;
-    let _id = db::ping::insert(&conn, &ping).await?;
+    let id = pm.insert(&conn.client).await?;
 
     println!("Added ping monitor:");
-    println!("    token : {}", &ping.token);
-    println!("    name  : {}", &ping.name);
-    println!("    period: {}", humantime::Duration::from(ping.period));
-    println!("    grace : {}", humantime::Duration::from(ping.grace));
+    println!("    id    : {}", id);
+    println!("    token : {}", &pm.token);
+    println!("    name  : {}", &pm.name);
+    println!("    period: {}", humantime::Duration::from(pm.period));
+    println!("    grace : {}", humantime::Duration::from(pm.grace));
 
     Ok(())
 }
 
 async fn list(options: &Options) -> Result<()>
 {
+    let now = chrono::Utc::now();
+
     let conn = db::connect(&options.db).await?;
-    let pings = db::ping::get_all_with_stats(&conn.client).await?;
+    let pms = PingMonitorExt::get_all(&conn.client, now).await?;
 
     use comfy_table::{Cell, CellAlignment, Table};
 
@@ -54,14 +57,22 @@ async fn list(options: &Options) -> Result<()>
 
     table.set_header(["ID", "TOKEN", "NAME", "PERIOD", "GRACE", "CREATED", "PINGS", "LAST_PING", "STATE", "STATE_SINCE"]);
 
-    let now = chrono::Utc::now();
-
-    for (pm, stats) in pings {
+    for pm in pms {
         let last_ping_str =
-            if let Some(last_ping_at) = stats.last_ping_at {
+            if let Some(last_ping_at) = pm.stats().last_ping_at {
                 format!("{} ({})", last_ping_at.format("%F %T %:z").to_string(), format_last_ping_delta(now, last_ping_at))
             } else {
                 "".to_string()
+            };
+
+        let state_str =
+            if pm.is_late(now) {
+                "Late"
+            } else if pm.is_ok() {
+                "Ok"
+            } else {
+                assert!(pm.is_failed());
+                "Failed"
             };
 
         table.add_row([
@@ -71,10 +82,10 @@ async fn list(options: &Options) -> Result<()>
             Cell::new(humantime::Duration::from(pm.period)).set_alignment(CellAlignment::Right),
             Cell::new(humantime::Duration::from(pm.grace)).set_alignment(CellAlignment::Right),
             Cell::new(pm.created_at.format("%F %T %:z")),
-            Cell::new(stats.num_pings).set_alignment(CellAlignment::Right),
+            Cell::new(pm.stats().num_pings).set_alignment(CellAlignment::Right),
             Cell::new(last_ping_str),
-            Cell::new(stats.state),  // TODO: show "Late" when in grace period
-            Cell::new(stats.state_since.format("%F %T %:z")),
+            Cell::new(state_str),
+            Cell::new(pm.stats().state_since.format("%F %T %:z")),
         ]);
     }
 

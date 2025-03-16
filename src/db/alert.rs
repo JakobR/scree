@@ -31,9 +31,9 @@ impl Channel {
     }
 }
 
-pub struct EmailConfig {
-    /* TODO */
-}
+// pub struct EmailConfig {
+//     /* TODO */
+// }
 
 pub struct TelegramConfig {
     pub bot_token: String,
@@ -45,10 +45,10 @@ pub mod property {
     pub const TELEGRAM_CHAT_ID: &str = "telegram_chat_id";
 }
 
-pub async fn get_email_config(db: &mut impl GenericClient) -> Result<Option<EmailConfig>>
-{
-    Ok(None)
-}
+// pub async fn get_email_config(db: &mut impl GenericClient) -> Result<Option<EmailConfig>>
+// {
+//     Ok(None)
+// }
 
 pub async fn set_telegram_config(db: &mut impl GenericClient, cfg: &TelegramConfig) -> Result<()>
 {

@@ -5,7 +5,7 @@ use crate::cli::{AlertCommand, AlertOptions, EmailOptions, Options, TelegramComm
 use crate::db;
 use crate::db::alert::Alert;
 
-pub async fn execute_command(options: &Options, alert_options: &AlertOptions) -> Result<()>
+pub async fn main(options: &Options, alert_options: &AlertOptions) -> Result<()>
 {
     match &alert_options.command {
         AlertCommand::Email(email_options) => email_command(options, email_options).await?,
