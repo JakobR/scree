@@ -108,7 +108,7 @@ async fn check_deadlines(app: &App) -> Result<()>
     let mut state_guard = app.state.lock().await;
     let state = &mut *state_guard;
 
-    let mut db_guard = app.db_pool.get().await?;
+    let mut db_guard = app.db.pool().get().await?;
     let db = &mut *db_guard;
 
     info!("checking deadlines");

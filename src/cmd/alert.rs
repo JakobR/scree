@@ -31,30 +31,30 @@ async fn telegram_command(options: &Options, telegram_options: &TelegramOptions)
 
 async fn telegram_enable(options: &Options, telegram_enable_options: &TelegramEnableOptions) -> Result<()>
 {
-    let mut db = db::connect(&options.db).await?;
+    let db = db::connect_simple(&options.db).await?;
     let cfg = db::alert::TelegramConfig {
         bot_token: telegram_enable_options.bot_token.clone(),
         chat_id: telegram_enable_options.chat_id.clone(),
     };
-    db::alert::set_telegram_config(&mut db.client, &cfg).await?;
+    db::alert::set_telegram_config(db, &cfg).await?;
     Ok(())
 }
 
 async fn telegram_disable(options: &Options) -> Result<()>
 {
-    let mut db = db::connect(&options.db).await?;
-    db::alert::delete_telegram_config(&mut db.client).await?;
+    let db = db::connect_simple(&options.db).await?;
+    db::alert::delete_telegram_config(db).await?;
     Ok(())
 }
 
 async fn test(options: &Options) -> Result<()>
 {
-    let mut db = db::connect(&options.db).await?;
+    let db = db::connect_simple(&options.db).await?;
     let alert = Alert {
         subject: "Test".to_string(),
         message: "This is a test message.".to_string(),
         created_at: Utc::now(),
     };
-    db::alert::send(&mut db.client, &alert).await;
+    db::alert::send(db, &alert).await;
     Ok(())
 }

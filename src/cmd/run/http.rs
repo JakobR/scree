@@ -163,7 +163,7 @@ async fn handle_ping(app: &App, source_addr: SocketAddr, token: &str) -> Result<
     // otherwise interleaving could be such that a failure is recorded with a later timestamp while we are waiting on the state mutex
     let now = Utc::now();
 
-    let mut db_guard = app.db_pool.get().await.context("retrieving db connection from pool")?;
+    let mut db_guard = app.db.pool().get().await.context("retrieving db connection from pool")?;
     let db = &mut *db_guard;
 
     let id_opt = PingMonitor::find_by_token(db.client(), token).await?;

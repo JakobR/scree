@@ -110,7 +110,7 @@ pub async fn reload_ping_monitors(app: &App, state: &mut AppState) -> Result<()>
 {
     info!("(re-)loading ping monitors");
     let now = Utc::now();
-    let db = app.db_pool.get().await?;
+    let db = app.db.pool().get().await?;
 
     // We have the lock on the AppState at this point,
     // so we don't have to worry about pings coming in while reloading.

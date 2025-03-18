@@ -6,7 +6,6 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use deadline_watcher::{DeadlineWatchTask, DeadlineWatchToken};
-use deadpool_postgres::Pool;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
@@ -15,8 +14,9 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 use crate::cli::{Options, RunOptions};
+use crate::db::notifications::Notifications;
 use crate::db::ping::PingMonitorExt;
-use crate::db::{Connection, Database};
+use crate::db::{self, Database};
 use reload::{ReloadTask, ReloadToken};
 
 mod deadline_watcher;
@@ -45,7 +45,7 @@ impl From<AppData> for App {
 
 #[derive(Debug)]
 struct AppData {
-    db_pool: Pool,
+    db: Database,
     min_reload_interval: Duration,
     deadline_watcher: DeadlineWatchToken,
     reload: ReloadToken,
@@ -55,10 +55,10 @@ struct AppData {
 }
 
 impl AppData {
-    pub fn new(db_pool: Pool, deadline_watcher: DeadlineWatchToken, reload: ReloadToken, shutdown_token: CancellationToken) -> Self
+    pub fn new(db: Database, deadline_watcher: DeadlineWatchToken, reload: ReloadToken, shutdown_token: CancellationToken) -> Self
     {
         Self {
-            db_pool,
+            db,
             min_reload_interval: Duration::from_secs(5),
             deadline_watcher,
             reload,
@@ -124,21 +124,18 @@ pub async fn main(options: &Options, run_options: &RunOptions) -> Result<()>
     setup_signal_handling(shutdown_token.clone())?;
     setup_panic_hook(shutdown_token.clone());
 
-    let db = Database::new(&options.db)?;
-    // Long-running database connection is used to respond to database notifications
-    let mut conn = db.connect().await?;
-    // Connection pool is used for individual requests
-    let pool = db.connect_pool().await?;
+    let db =  db::connect(&options.db).await?;
 
     let deadline_watcher = DeadlineWatchTask::new();
     let reload_task = ReloadTask::new();
 
-    let app: App = AppData::new(pool, deadline_watcher.token(), reload_task.token(), shutdown_token.clone()).into();
+    let app: App = AppData::new(db, deadline_watcher.token(), reload_task.token(), shutdown_token.clone()).into();
 
     // lock the state mutex while sub-tasks are starting up (controlled startup while initial data is loaded)
     let mut state = app.state.lock().await;
 
-    let nf_handle = setup_db_notifications(&mut conn, app.clone()).await?;
+    let mut nf = app.db.spawn_notification_listener();
+    let nf_handle = setup_db_notifications(&mut nf, app.clone()).await?;
     let reload_handle = reload_task.spawn(app.clone());
     let watch_handle = deadline_watcher.spawn(app.clone());
 
@@ -160,8 +157,8 @@ pub async fn main(options: &Options, run_options: &RunOptions) -> Result<()>
     http_handle.await??;
     watch_handle.await?;
     reload_handle.await?;
-    conn.close().await?;
-    nf_handle.await?;  // stops after conn.close()
+    nf.close().await?;
+    nf_handle.await?;  // stops after nf.close()
 
     Ok(())
 }
@@ -184,14 +181,15 @@ fn setup_panic_hook(shutdown_token: CancellationToken)
     }));
 }
 
-async fn setup_db_notifications(conn: &mut Connection, app: App) -> Result<JoinHandle<()>>
+async fn setup_db_notifications(nf: &mut Notifications, app: App) -> Result<JoinHandle<()>>
 {
-    let rx = conn.take_notification_rx().expect("notification receiver is available");
+    let rx = nf.take_notification_rx().expect("notification receiver is available");
     let handle = tokio::spawn(poll_db_notifications(app, rx));
 
-    conn.client.batch_execute(/*sql*/ r"
-        LISTEN ping_monitors_changed;
-    ").await?;
+    let subscription_token = nf.subscribe("ping_monitors_changed").await?;
+
+    // we never unsubscribe
+    std::mem::forget(subscription_token);
 
     Ok(handle)
 }

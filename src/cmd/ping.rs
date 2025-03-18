@@ -30,8 +30,8 @@ pub async fn create(options: &Options, create_options: &PingCreateOptions) -> Re
         created_at: Utc::now(),
     };
 
-    let conn = db::connect(&options.db).await?;
-    let id = pm.insert(&conn.client).await?;
+    let db = db::connect_simple(&options.db).await?;
+    let id = pm.insert(db).await?;
 
     println!("Added ping monitor:");
     println!("    id    : {}", id);
@@ -47,8 +47,8 @@ async fn list(options: &Options) -> Result<()>
 {
     let now = chrono::Utc::now();
 
-    let conn = db::connect(&options.db).await?;
-    let pms = PingMonitorExt::get_all(&conn.client, now).await?;
+    let db = db::connect_simple(&options.db).await?;
+    let pms = PingMonitorExt::get_all(db, now).await?;
 
     use comfy_table::{Cell, CellAlignment, Table};
 
