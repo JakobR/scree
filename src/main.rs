@@ -7,8 +7,9 @@ mod cli;
 mod db;
 
 mod cmd {
-    pub mod ping;
     pub mod alert;
+    pub mod migrate;
+    pub mod ping;
     pub mod run;
 }
 
@@ -31,6 +32,8 @@ async fn main() -> Result<()>
             cmd::alert::main(&options, alert_options).await,
         Command::Run(run_options) =>
             cmd::run::main(&options, &run_options).await,
+        Command::Migrate =>
+            cmd::migrate::main(&options).await,
     }
 }
 

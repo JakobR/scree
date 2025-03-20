@@ -31,6 +31,8 @@ pub enum Command {
     Alert(AlertOptions),
     /// Run the scree server (service monitoring, alerts, dashboard).
     Run(RunOptions),
+    /// Migrate database schema to the latest version.
+    Migrate,
 }
 
 #[derive(Parser, Debug)]

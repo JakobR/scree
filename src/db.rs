@@ -1,9 +1,7 @@
-use std::ops::DerefMut;
-
 use anyhow::{bail, Context, Result};
 use deadpool_postgres::Pool;
 use tokio_postgres::{Client, GenericClient};
-use tracing::debug;
+use tracing::{debug, info};
 
 use notifications::Notifications;
 
@@ -34,6 +32,7 @@ type Connection = tokio_postgres::Connection<tokio_postgres::Socket, postgres_na
 #[derive(Debug, Clone)]
 pub struct DatabaseConfig {
     pub pg_config: tokio_postgres::Config,
+    pub do_migrations: bool,
 }
 
 impl DatabaseConfig {
@@ -41,7 +40,16 @@ impl DatabaseConfig {
     pub fn new(config_str: &str) -> Result<Self>
     {
         let pg_config  = config_str.parse::<tokio_postgres::Config>()?;
-        Ok(DatabaseConfig { pg_config })
+        Ok(DatabaseConfig {
+            pg_config,
+            do_migrations: false,
+        })
+    }
+
+    pub fn enable_migrations(mut self) -> Self
+    {
+        self.do_migrations = true;
+        self
     }
 
     async fn connect_client(&self) -> Result<(Client, Connection)>
@@ -88,9 +96,9 @@ impl Database {
         let pool = config.connect_pool().await?;
 
         let mut client_guard = pool.get().await?;
-        let client = client_guard.deref_mut().deref_mut();
+        let client = &mut **client_guard;
 
-        init_schema(client).await?;
+        init_schema(client, &config).await?;
 
         Ok(Self { config, pool })
     }
@@ -109,7 +117,7 @@ impl Database {
     {
         let guard = self.pool.get().await?;
         let guard = Box::leak(Box::new(guard));
-        let client = guard.deref_mut().deref_mut();
+        let client = &mut ***guard;
         Ok(client)
     }
 }
@@ -148,14 +156,14 @@ pub async fn set_property(db: &impl GenericClient, name: &str, value: Option<&st
     Ok(())
 }
 
-async fn get_schema_version(db: &impl GenericClient) -> Result<Option<u32>>
+pub async fn get_schema_version(db: &impl GenericClient) -> Result<Option<u32>>
 {
     let version_str = get_property(db, property::SCHEMA_VERSION).await?;
     let version = version_str.map(|s| s.parse()).transpose()?;
     Ok(version)
 }
 
-async fn init_schema(db: &mut impl GenericClient) -> Result<()>
+async fn init_schema(db: &mut impl GenericClient, config: &DatabaseConfig) -> Result<()>
 {
     // Create property table early, to ensure we can query the schema version
     db.batch_execute(/*sql*/ r#"
@@ -169,12 +177,12 @@ async fn init_schema(db: &mut impl GenericClient) -> Result<()>
         create_schema(db).await?;
     }
 
-    migrate_schema(db).await?;
+    migrate_schema(db, config).await?;
 
     Ok(())
 }
 
-const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 1;
 
 async fn create_schema(db: &mut impl GenericClient) -> Result<()>
 {
@@ -257,29 +265,30 @@ async fn create_schema(db: &mut impl GenericClient) -> Result<()>
     Ok(())
 }
 
-async fn migrate_schema(db: &mut impl GenericClient) -> Result<()>
+async fn migrate_schema(db: &mut impl GenericClient, config: &DatabaseConfig) -> Result<()>
 {
-    let schema_version = get_schema_version(db).await?
+    let db_schema_version = get_schema_version(db).await?
         .context("unable to determine database schema version")?;
-    debug!("database schema version: {}", schema_version);
+    debug!("database schema version: {}", db_schema_version);
 
-    if schema_version < SCHEMA_VERSION {
+    if db_schema_version == SCHEMA_VERSION && config.do_migrations {
+        info!("database schema is at current version; migration is not necessary.")
+    }
+
+    if db_schema_version < SCHEMA_VERSION {
+        if !config.do_migrations {
+            bail!("unsupported schema version {} (supported version is {}). Run 'migrate' to upgrade the database schema.", db_schema_version, SCHEMA_VERSION);
+        }
         todo!("upgrade schema");
     }
 
-    if schema_version > SCHEMA_VERSION {
-        bail!("unsupported schema version {} (supported version is {})", schema_version, SCHEMA_VERSION);
+    if db_schema_version > SCHEMA_VERSION {
+        bail!("unsupported schema version {} (supported version is {})", db_schema_version, SCHEMA_VERSION);
     }
 
-    assert_eq!(schema_version, SCHEMA_VERSION);
+    assert_eq!(db_schema_version, SCHEMA_VERSION);
     Ok(())
 }
-
-/*
-
-when sending alerts, lock the row to make sure we send it only once: https://stackoverflow.com/a/52557413
-
-*/
 
 
 /*
