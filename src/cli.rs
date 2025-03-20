@@ -1,4 +1,6 @@
 use std::net::SocketAddr;
+use std::path::PathBuf;
+use std::str::FromStr;
 
 use clap::{Parser, Subcommand};
 use humantime::Duration;
@@ -119,8 +121,41 @@ pub struct TelegramEnableOptions {
     pub chat_id: String,
 }
 
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone)]
 pub struct RunOptions {
-    #[arg(long = "listen", default_value_t = ([127, 0, 0, 1], 3000).into())]
-    pub listen_addr: SocketAddr,
+    /// The address on which the HTTP server should listen.
+    /// Either an IP address and port for a regular socket, or an absolute path for a unix socket.
+    #[arg(long = "listen", default_value = "127.0.0.1:3000")]
+    pub listen_addr: SocketAddrOrPath,
+    /// Obtain the client's remote IP address from the header "x-real-ip".
+    /// Useful if connections are going through a reverse proxy.
+    #[arg(long)]
+    pub set_real_ip: bool,
+}
+
+#[derive(Debug, Clone)]
+pub enum SocketAddrOrPath {
+    Inet(SocketAddr),
+    Unix(PathBuf),
+}
+
+impl FromStr for SocketAddrOrPath {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> anyhow::Result<Self> {
+        if s.starts_with("/") {
+            Ok(Self::Unix(s.parse()?))
+        } else {
+            Ok(Self::Inet(s.parse()?))
+        }
+    }
+}
+
+impl std::fmt::Display for SocketAddrOrPath {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SocketAddrOrPath::Inet(addr) => addr.fmt(f),
+            SocketAddrOrPath::Unix(path) => write!(f, "{:?}", path),
+        }
+    }
 }

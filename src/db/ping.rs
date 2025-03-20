@@ -1,4 +1,4 @@
-use std::net::SocketAddr;
+use std::net::IpAddr;
 use std::ops::Deref;
 use std::time::Duration;
 
@@ -171,11 +171,11 @@ impl PingMonitorExt {
         Ok(())
     }
 
-    async fn record_ping(&mut self, db: &impl GenericClient, occurred_at: DateTime<Utc>, source_addr: SocketAddr) -> Result<()>
+    async fn record_ping(&mut self, db: &impl GenericClient, occurred_at: DateTime<Utc>, source_addr: Option<IpAddr>) -> Result<()>
     {
         db.execute(/* sql */ r"
-            INSERT INTO pings (monitor_id, occurred_at, source_addr, source_port) VALUES ($1, $2, $3, $4)
-        ", &[&self.id, &occurred_at, &source_addr.ip(), &(source_addr.port() as i32)]).await?;
+            INSERT INTO pings (monitor_id, occurred_at, source_addr) VALUES ($1, $2, $3)
+        ", &[&self.id, &occurred_at, &source_addr]).await?;
 
         self.stats.num_pings += 1;
         self.stats.last_ping_at = Some(occurred_at);
@@ -184,7 +184,7 @@ impl PingMonitorExt {
         Ok(())
     }
 
-    pub async fn event_ping(&mut self, db: &impl GenericClient, now: DateTime<Utc>, source_addr: SocketAddr) -> Result<()>
+    pub async fn event_ping(&mut self, db: &impl GenericClient, now: DateTime<Utc>, source_addr: Option<IpAddr>) -> Result<()>
     {
         self.record_ping(db, now, source_addr).await?;
         self.record_state(db, MonitorState::Ok, now).await?;

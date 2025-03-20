@@ -46,6 +46,7 @@ impl From<AppData> for App {
 #[derive(Debug)]
 struct AppData {
     db: Database,
+    options: RunOptions,
     min_reload_interval: Duration,
     deadline_watcher: DeadlineWatchToken,
     reload: ReloadToken,
@@ -55,10 +56,11 @@ struct AppData {
 }
 
 impl AppData {
-    pub fn new(db: Database, deadline_watcher: DeadlineWatchToken, reload: ReloadToken, shutdown_token: CancellationToken) -> Self
+    pub fn new(db: Database, options: RunOptions, deadline_watcher: DeadlineWatchToken, reload: ReloadToken, shutdown_token: CancellationToken) -> Self
     {
         Self {
             db,
+            options,
             min_reload_interval: Duration::from_secs(5),
             deadline_watcher,
             reload,
@@ -129,7 +131,7 @@ pub async fn main(options: &Options, run_options: &RunOptions) -> Result<()>
     let deadline_watcher = DeadlineWatchTask::new();
     let reload_task = ReloadTask::new();
 
-    let app: App = AppData::new(db, deadline_watcher.token(), reload_task.token(), shutdown_token.clone()).into();
+    let app: App = AppData::new(db, run_options.clone(), deadline_watcher.token(), reload_task.token(), shutdown_token.clone()).into();
 
     // lock the state mutex while sub-tasks are starting up (controlled startup while initial data is loaded)
     let mut state = app.state.lock().await;
@@ -140,7 +142,7 @@ pub async fn main(options: &Options, run_options: &RunOptions) -> Result<()>
     let watch_handle = deadline_watcher.spawn(app.clone());
 
     let http_handle = tokio::spawn(
-        http::run_server(run_options.listen_addr, app.clone())
+        http::run_server(run_options.listen_addr.clone(), app.clone())
     );
 
     // load initial data

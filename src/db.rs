@@ -219,7 +219,6 @@ async fn create_schema(db: &mut impl GenericClient) -> Result<()>
         , monitor_id INTEGER NOT NULL REFERENCES ping_monitors(id)
         , occurred_at TIMESTAMP WITH TIME ZONE NOT NULL
         , source_addr INET
-        , source_port INTEGER
         -- TODO: geo-ip information? e.g., using https://crates.io/crates/maxminddb
         );
 
