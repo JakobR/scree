@@ -72,6 +72,8 @@ in
           "${cfg.package}/bin/scree --db ${escapeShellArg cfg.database} run " +
           "--listen ${escapeShellArg cfg.listen} " +
           (if cfg.setRealIp then "--set-real-ip " else "");
+        Restart = "on-failure";
+        RestartSec = "5s";
       };
     };
 
