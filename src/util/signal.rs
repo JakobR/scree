@@ -41,8 +41,8 @@ pub fn install_signal_handlers<F>(exit_handler: F) -> Result<()>
         loop {
             tokio::select! {
                 // Need to consume any signals that appear during the delay
-                _ = signals.next() => { /* do nothing */ },
-                _ = sleep(delay) => { break; }
+                _ = signals.next() => { /* do nothing */ }
+                _ = sleep(delay) => break,
             };
         }
         warn!("Clean-up is taking longer than expected. Re-installing terminating signal handlers in {delay_secs} seconds.");
@@ -50,8 +50,8 @@ pub fn install_signal_handlers<F>(exit_handler: F) -> Result<()>
         loop {
             tokio::select! {
                 // Need to consume any signals that appear during the delay
-                _ = signals.next() => { /* do nothing */ },
-                _ = sleep(delay) => { break; }
+                _ = signals.next() => { /* do nothing */ }
+                _ = sleep(delay) => break,
             };
         }
         warn!("Re-installed terminating signal handlers.");

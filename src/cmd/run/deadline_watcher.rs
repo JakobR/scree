@@ -4,7 +4,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use deadpool_postgres::ClientWrapper;
-use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_postgres::GenericClient;
 use tracing::{error, info};
@@ -17,7 +17,7 @@ use super::App;
 
 #[derive(Debug)]
 pub struct DeadlineWatchToken {
-    deadlines_updated_tx: UnboundedSender<()>,
+    deadlines_updated_tx: mpsc::UnboundedSender<()>,
 }
 
 impl DeadlineWatchToken {
@@ -31,8 +31,8 @@ impl DeadlineWatchToken {
 
 #[derive(Debug)]
 pub struct DeadlineWatchTask {
-    deadlines_updated_tx: UnboundedSender<()>,
-    deadlines_updated_rx: UnboundedReceiver<()>,
+    deadlines_updated_tx: mpsc::UnboundedSender<()>,
+    deadlines_updated_rx: mpsc::UnboundedReceiver<()>,
 }
 
 impl DeadlineWatchTask {
@@ -54,7 +54,7 @@ impl DeadlineWatchTask {
 }
 
 
-async fn watch_deadlines(mut deadlines_updated_rx: UnboundedReceiver<()>, app: App)
+async fn watch_deadlines(mut deadlines_updated_rx: mpsc::UnboundedReceiver<()>, app: App)
 {
     loop {
 

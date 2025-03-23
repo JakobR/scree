@@ -69,7 +69,8 @@ pub struct SubscriptionToken {
 
 impl SubscriptionToken {
     #[allow(unused)]
-    pub async fn unsubscribe(mut self) -> Result<()> {
+    pub async fn unsubscribe(mut self) -> Result<()>
+    {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.command_tx.send(Command::Unsubscribe(self.channel.clone(), reply_tx)).context("subscription loop is not running")?;
         let () = reply_rx.blocking_recv().context("reply_tx dropped")?.context("unable to subscribe due to database error")?;
@@ -98,7 +99,7 @@ enum Command {
 
 
 struct Backoff {
-    last_attempt: Option<Instant>,
+    prev_attempt: Option<Instant>,
     consecutive_failures: usize,
 }
 
@@ -115,21 +116,21 @@ impl Backoff {
 
     pub fn new() -> Self {
         Self {
-            last_attempt: None,
+            prev_attempt: None,
             consecutive_failures: 0,
         }
     }
 
     pub async fn wait(&mut self, token: &CancellationToken)
     {
-        let last_attempt = self.last_attempt.clone();
-        self.last_attempt = Some(Instant::now());
+        let prev_attempt = self.prev_attempt.clone();
+        self.prev_attempt = Some(Instant::now());
 
-        let Some(last_attempt) = last_attempt else {
+        let Some(prev_attempt) = prev_attempt else {
             // first attempt, don't wait
             return;
         };
-        let elapsed = last_attempt.elapsed();
+        let elapsed = prev_attempt.elapsed();
 
         if elapsed >= Self::SUCCESS_THRESHOLD {
             // we have been alive for some time, retry immediately
