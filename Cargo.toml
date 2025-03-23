@@ -2,7 +2,9 @@
 name = "scree"
 version = "0.1.0"
 edition = "2021"
+authors = ["Jakob Rath <git@jakobrath.eu>"]
 license = "GPL-3.0-only"
+readme = "README.md"
 
 [dependencies]
 anyhow = "1.0.95"
