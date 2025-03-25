@@ -11,7 +11,7 @@ use humantime::Duration;
 pub struct Options {
     /// Database connection string.
     /// See https://docs.rs/tokio-postgres/latest/tokio_postgres/config/struct.Config.html
-    #[arg(long)]
+    #[arg(long, env = "SCREE_DB")]
     pub db: String,
 
     #[command(subcommand)]

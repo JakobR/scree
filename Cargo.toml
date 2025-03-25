@@ -11,7 +11,7 @@ anyhow = "1.0.95"
 askama = "0.12.1"
 axum = "0.8.1"
 chrono = { version = "0.4.39", features = ["now"] }
-clap = { version = "4.5.30", features = ["cargo", "derive"] }
+clap = { version = "4.5.30", features = ["cargo", "derive", "env"] }
 comfy-table = "7.1.4"
 deadpool-postgres = "0.14.1"
 futures = "0.3.31"
