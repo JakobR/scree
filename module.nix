@@ -28,6 +28,12 @@ in
       description = "Obtain the client's remote IP address from the header 'x-real-ip'. Useful if connections go through a reverse proxy.";
     };
 
+    unixSocketMode = mkOption {
+      type = types.str;
+      default = "700";
+      description = "Permissions of the unix socket, if one is used.";
+    };
+
     user = mkOption {
       type = types.str;
       default = "scree";
@@ -71,6 +77,7 @@ in
         ExecStart =
           "${cfg.package}/bin/scree --db ${escapeShellArg cfg.database} run " +
           "--listen ${escapeShellArg cfg.listen} " +
+          "--unix-socket-mode ${escapeShellArg cfg.unixSocketMode} " +
           (if cfg.setRealIp then "--set-real-ip " else "");
         Restart = "on-failure";
         RestartSec = "5s";

@@ -2,6 +2,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::str::FromStr;
 
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use humantime::Duration;
 
@@ -131,6 +132,8 @@ pub struct RunOptions {
     /// Useful if connections are going through a reverse proxy.
     #[arg(long)]
     pub set_real_ip: bool,
+    #[arg(long, value_parser = parse_file_mode, default_value = "700")]
+    pub unix_socket_mode: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -142,7 +145,7 @@ pub enum SocketAddrOrPath {
 impl FromStr for SocketAddrOrPath {
     type Err = anyhow::Error;
 
-    fn from_str(s: &str) -> anyhow::Result<Self> {
+    fn from_str(s: &str) -> Result<Self> {
         if s.starts_with("/") {
             Ok(Self::Unix(s.parse()?))
         } else {
@@ -158,4 +161,10 @@ impl std::fmt::Display for SocketAddrOrPath {
             SocketAddrOrPath::Unix(path) => write!(f, "{:?}", path),
         }
     }
+}
+
+fn parse_file_mode(s: &str) -> Result<u32>
+{
+    u32::from_str_radix(s, 8)
+        .context("unable to parse as octal number")
 }

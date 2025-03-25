@@ -1,4 +1,6 @@
+use std::fs;
 use std::net::{IpAddr, SocketAddr};
+use std::os::unix::fs::PermissionsExt;
 
 use anyhow::{Context, Result};
 use askama::Template;
@@ -14,27 +16,29 @@ use thiserror::Error;
 use tokio_postgres::GenericClient;
 use tracing::{debug, error, warn};
 
-use crate::cli::SocketAddrOrPath;
+use crate::cli::{RunOptions, SocketAddrOrPath};
 use crate::db::ping::{PingMonitor, PingMonitorExt};
 use super::App;
 
 
-pub async fn run_server(listen_addr: SocketAddrOrPath, app: App) -> Result<()>
+pub async fn run_http_server(options: RunOptions, app: App) -> Result<()>
 {
-    tracing::debug!("listening on {}", listen_addr);
-    match listen_addr {
+    tracing::debug!("listening on {}", options.listen_addr);
+    match options.listen_addr {
         SocketAddrOrPath::Inet(addr) => {
             let listener = tokio::net::TcpListener::bind(addr).await?;
-            run_server_impl(listener, app).await
+            run_http_server_impl(listener, app).await
         }
         SocketAddrOrPath::Unix(path) => {
             let listener = tokio::net::UnixListener::bind(&path)?;
-            run_server_impl(listener, app).await
+            let perm = fs::Permissions::from_mode(options.unix_socket_mode);
+            fs::set_permissions(&path, perm)?;
+            run_http_server_impl(listener, app).await
         }
     }
 }
 
-async fn run_server_impl<L>(listener: L, app: App) -> Result<()>
+async fn run_http_server_impl<L>(listener: L, app: App) -> Result<()>
     where
         L: Listener,
         L::Addr: std::fmt::Debug,

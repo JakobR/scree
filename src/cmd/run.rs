@@ -142,7 +142,7 @@ pub async fn main(options: &Options, run_options: &RunOptions) -> Result<()>
     let watch_handle = deadline_watcher.spawn(app.clone());
 
     let http_handle = tokio::spawn(
-        http::run_server(run_options.listen_addr.clone(), app.clone())
+        http::run_http_server(run_options.clone(), app.clone())
     );
 
     // load initial data
