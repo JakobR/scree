@@ -30,10 +30,18 @@ pub async fn run_http_server(options: RunOptions, app: App) -> Result<()>
             run_http_server_impl(listener, app).await
         }
         SocketAddrOrPath::Unix(path) => {
+            if fs::exists(&path).with_context(|| format!("unable to access socket file path {:?}", &path))? {
+                warn!("socket file already exists, will try to remove it: {:?}", &path);
+                fs::remove_file(&path)?;
+            }
             let listener = tokio::net::UnixListener::bind(&path)?;
             let perm = fs::Permissions::from_mode(options.unix_socket_mode);
             fs::set_permissions(&path, perm)?;
-            run_http_server_impl(listener, app).await
+            let result = run_http_server_impl(listener, app).await;
+            if let Err(e) = fs::remove_file(&path) {
+                warn!("unable to remove socket file {:?}: {}", &path, e);
+            }
+            result
         }
     }
 }
