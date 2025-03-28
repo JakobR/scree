@@ -14,7 +14,7 @@ let
   # TODO: the flake should use the same nixpkgs as the rest of the system.
   #       see also https://github.com/NixOS/nix/pull/11952
   scree = (builtins.getFlake "github:JakobR/scree");
-  screeModule = scree.nixosModules.${builtins.currentSystem}.default;
+  screeModule = scree.nixosModules.default;
 in {
   imports = [
     ./hardware-configuration.nix

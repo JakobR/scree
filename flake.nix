@@ -70,8 +70,6 @@
         inherit scree;
       };
 
-      nixosModules.default = (import ./module.nix) { flake = self; };
-
       devShells.default = craneLib.devShell {
         # Inherit inputs from checks.
         checks = self.checks.${system};
@@ -84,7 +82,10 @@
         ];
       };
 
-    }
-  );
+    })
+    // {
+      nixosModules.scree = (import ./module.nix) { flake = self; };
+      nixosModules.default = self.nixosModules.scree;
+    };
 
 }
