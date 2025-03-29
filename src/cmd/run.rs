@@ -271,13 +271,8 @@ async fn start_subtasks(app: &App, reload_task: ReloadTask, deadline_watcher: De
     let state = &mut *state_guard;
 
     let mut nf = app.db.spawn_notification_listener();
-
     setup_db_notifications(&mut nf, app).await?;
-
-    app.spawn_on_shutdown("nf.close", async move {
-        nf.close().await?;
-        Ok(())
-    }).await;
+    app.spawn_on_shutdown("nf.close", nf.close()).await;
 
     reload_task.spawn(app).await;
     deadline_watcher.spawn(app).await;
