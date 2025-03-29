@@ -6,6 +6,7 @@ use uuid::Uuid;
 
 use crate::cli::{Options, PingCommand, PingCreateOptions, PingOptions};
 use crate::db;
+use crate::db::config::get_domain_or_default;
 use crate::db::ping::{PingMonitor, PingMonitorExt};
 
 pub async fn main(options: &Options, ping_options: &PingOptions) -> Result<()>
@@ -39,6 +40,12 @@ pub async fn create(options: &Options, create_options: &PingCreateOptions) -> Re
     println!("    name  : {}", &pm.name);
     println!("    period: {}", humantime::Duration::from(pm.period));
     println!("    grace : {}", humantime::Duration::from(pm.grace));
+
+    let domain = get_domain_or_default(db).await?;
+    println!();
+    println!("Run the following to signal a ping monitor:");
+    println!();
+    println!("    curl --silent --location https://{}/ping/{} > /dev/null || true", domain, &pm.token);
 
     Ok(())
 }

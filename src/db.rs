@@ -6,6 +6,7 @@ use tracing::{debug, info};
 use notifications::Notifications;
 
 pub mod alert;
+pub mod config;
 pub mod notifications;
 pub mod ping;
 pub mod util;
