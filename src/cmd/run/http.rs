@@ -16,15 +16,16 @@ use thiserror::Error;
 use tokio_postgres::GenericClient;
 use tracing::{debug, error, warn};
 
-use crate::cli::{RunOptions, SocketAddrOrPath};
+use crate::cli::SocketAddrOrPath;
 use crate::db::ping::{PingMonitor, PingMonitorExt};
 use super::App;
 
 
-pub async fn run_http_server(options: RunOptions, app: App) -> Result<()>
+pub async fn run_http_server(app: App) -> Result<()>
 {
-    tracing::debug!("listening on {}", options.listen_addr);
-    match options.listen_addr {
+    let listen_addr = &app.options.listen_addr;
+    tracing::debug!("listening on {}", listen_addr);
+    match &listen_addr {
         SocketAddrOrPath::Inet(addr) => {
             let listener = tokio::net::TcpListener::bind(addr).await?;
             run_http_server_impl(listener, app).await
@@ -35,13 +36,10 @@ pub async fn run_http_server(options: RunOptions, app: App) -> Result<()>
                 fs::remove_file(&path)?;
             }
             let listener = tokio::net::UnixListener::bind(&path)?;
-            let perm = fs::Permissions::from_mode(options.unix_socket_mode);
+            let perm = fs::Permissions::from_mode(app.options.unix_socket_mode);
             fs::set_permissions(&path, perm)?;
-            let result = run_http_server_impl(listener, app).await;
-            if let Err(e) = fs::remove_file(&path) {
-                warn!("unable to remove socket file {:?}: {}", &path, e);
-            }
-            result
+            app.spawn_on_shutdown("cleanup_socket_file", cleanup_socket_file(&path)).await;
+            run_http_server_impl(listener, app).await
         }
     }
 }
@@ -62,6 +60,13 @@ async fn run_http_server_impl<L>(listener: L, app: App) -> Result<()>
         .with_graceful_shutdown(app.shutdown_token.clone().cancelled_owned())
         .await?;
     Ok(())
+}
+
+async fn cleanup_socket_file(path: &std::path::Path)
+{
+    if let Err(e) = fs::remove_file(path) {
+        warn!("unable to remove socket file {:?}: {}", path, e);
+    }
 }
 
 #[derive(Debug, Clone)]

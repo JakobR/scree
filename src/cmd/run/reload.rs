@@ -3,7 +3,6 @@ use std::time::Instant;
 use anyhow::{Context, Result};
 use chrono::Utc;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
-use tokio::task::JoinHandle;
 use tokio_postgres::GenericClient;
 use tracing::{debug, error, info};
 
@@ -53,9 +52,11 @@ impl ReloadTask {
         ReloadToken { reload_tx: self.reload_tx.clone() }
     }
 
-    pub fn spawn(self, app: App) -> JoinHandle<()>
+    pub async fn spawn(self, app: &App)
     {
-        tokio::spawn(process_reload_requests(self.reload_rx, self.reload_tx, app))
+        app.spawn("reload_task",
+            process_reload_requests(self.reload_rx, self.reload_tx, app.clone())
+        ).await;
     }
 
 }

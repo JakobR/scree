@@ -14,6 +14,7 @@ mod cmd {
 }
 
 mod util {
+    pub mod into_result;
     pub mod signal;
 }
 
@@ -22,18 +23,17 @@ async fn main() -> Result<()>
 {
     setup_tracing();
 
-    let options = Options::parse();
-    debug!(?options);
+    let options = read_options();
 
     match &options.command {
         Command::Ping(ping_options) =>
-            cmd::ping::main(&options, &ping_options).await,
+            cmd::ping::main(options, ping_options).await,
         Command::Alert(alert_options) =>
-            cmd::alert::main(&options, alert_options).await,
+            cmd::alert::main(options, alert_options).await,
         Command::Run(run_options) =>
-            cmd::run::main(&options, &run_options).await,
+            cmd::run::main(options, run_options).await,
         Command::Migrate =>
-            cmd::migrate::main(&options).await,
+            cmd::migrate::main(options).await,
     }
 }
 
@@ -55,4 +55,11 @@ fn setup_tracing()
         .event_format(format)
         .with_env_filter(filter)
         .init();
+}
+
+fn read_options() -> &'static Options
+{
+    let options = Options::parse();
+    debug!(?options);
+    Box::leak(Box::new(options))
 }

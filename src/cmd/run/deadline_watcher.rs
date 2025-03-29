@@ -5,7 +5,6 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use deadpool_postgres::ClientWrapper;
 use tokio::sync::mpsc;
-use tokio::task::JoinHandle;
 use tokio_postgres::GenericClient;
 use tracing::{error, info};
 
@@ -47,9 +46,9 @@ impl DeadlineWatchTask {
         DeadlineWatchToken { deadlines_updated_tx: self.deadlines_updated_tx.clone() }
     }
 
-    pub fn spawn(self, app: App) -> JoinHandle<()>
+    pub async fn spawn(self, app: &App)
     {
-        tokio::spawn(watch_deadlines(self.deadlines_updated_rx, app))
+        app.spawn("deadline_watcher", watch_deadlines(self.deadlines_updated_rx, app.clone())).await;
     }
 }
 
