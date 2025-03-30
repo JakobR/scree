@@ -1,16 +1,13 @@
 use anyhow::Result;
 use tokio_postgres::GenericClient;
 
-use super::{get_property, set_property};
+use crate::db::{property, get_property, set_property};
 
 
 pub enum Parameter {
     Domain,
 }
 
-mod property {
-    pub const DOMAIN: &str = "domain";
-}
 
 pub async fn get_domain(db: &impl GenericClient) -> Result<Option<String>>
 {

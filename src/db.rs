@@ -127,6 +127,11 @@ impl Database {
 pub mod property {
     pub const SCHEMA_VERSION: &str = "schema_version";
     pub const CREATED_AT: &str = "created_at";
+    // alerts
+    pub const TELEGRAM_BOT_TOKEN: &str = "telegram_bot_token";
+    pub const TELEGRAM_CHAT_ID: &str = "telegram_chat_id";
+    // config parameters
+    pub const DOMAIN: &str = "domain";
 }
 
 

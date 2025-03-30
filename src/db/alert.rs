@@ -40,11 +40,6 @@ pub struct TelegramConfig {
     pub chat_id: String,
 }
 
-pub mod property {
-    pub const TELEGRAM_BOT_TOKEN: &str = "telegram_bot_token";
-    pub const TELEGRAM_CHAT_ID: &str = "telegram_chat_id";
-}
-
 // pub async fn get_email_config(db: &mut impl GenericClient) -> Result<Option<EmailConfig>>
 // {
 //     Ok(None)
@@ -53,8 +48,8 @@ pub mod property {
 pub async fn set_telegram_config(db: &mut impl GenericClient, cfg: &TelegramConfig) -> Result<()>
 {
     let t = db.transaction().await?;
-    db::set_property(&t, property::TELEGRAM_BOT_TOKEN, Some(&cfg.bot_token)).await?;
-    db::set_property(&t, property::TELEGRAM_CHAT_ID, Some(&cfg.chat_id)).await?;
+    db::set_property(&t, db::property::TELEGRAM_BOT_TOKEN, Some(&cfg.bot_token)).await?;
+    db::set_property(&t, db::property::TELEGRAM_CHAT_ID, Some(&cfg.chat_id)).await?;
     t.commit().await?;
     Ok(())
 }
@@ -62,8 +57,8 @@ pub async fn set_telegram_config(db: &mut impl GenericClient, cfg: &TelegramConf
 pub async fn delete_telegram_config(db: &mut impl GenericClient) -> Result<()>
 {
     let t = db.transaction().await?;
-    db::set_property(&t, property::TELEGRAM_BOT_TOKEN, None).await?;
-    db::set_property(&t, property::TELEGRAM_CHAT_ID, None).await?;
+    db::set_property(&t, db::property::TELEGRAM_BOT_TOKEN, None).await?;
+    db::set_property(&t, db::property::TELEGRAM_CHAT_ID, None).await?;
     t.commit().await?;
     Ok(())
 }
@@ -71,8 +66,8 @@ pub async fn delete_telegram_config(db: &mut impl GenericClient) -> Result<()>
 pub async fn get_telegram_config(db: &mut impl GenericClient) -> Result<Option<TelegramConfig>>
 {
     let t = db.transaction().await?;
-    let bot_token = db::get_property(&t, property::TELEGRAM_BOT_TOKEN).await?;
-    let chat_id = db::get_property(&t, property::TELEGRAM_CHAT_ID).await?;
+    let bot_token = db::get_property(&t, db::property::TELEGRAM_BOT_TOKEN).await?;
+    let chat_id = db::get_property(&t, db::property::TELEGRAM_CHAT_ID).await?;
     t.commit().await?;
 
     let Some(bot_token) = bot_token else { return Ok(None); };
